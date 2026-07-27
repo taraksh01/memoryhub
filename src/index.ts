@@ -44,6 +44,7 @@ interface ToolArgs {
   limit?: number;
   memory_id?: string;
   ids?: string[];
+  msg?: string;
 }
 
 async function ensureCollection() {
@@ -61,8 +62,11 @@ async function llm(messages: ChatMessage[]): Promise<string> {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${LLM_KEY}` },
     body: JSON.stringify({ model: LLM_MODEL, messages, temperature: 0.1, max_tokens: 2000 }),
   });
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(`LLM ${r.status}: ${body.slice(0, 300)}`);
+  }
   const d: ChatResponse = await r.json();
-  if (!r.ok) throw new Error(d.error?.message || "LLM call failed");
   return d.choices[0].message.content;
 }
 
@@ -72,8 +76,11 @@ async function embed(text: string): Promise<number[]> {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${EMBED_KEY}` },
     body: JSON.stringify({ model: EMBED_MODEL, input: text }),
   });
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(`Embed ${r.status}: ${body.slice(0, 300)}`);
+  }
   const d: EmbeddingResponse = await r.json();
-  if (!r.ok) throw new Error(d.error?.message || "Embedding call failed");
   return d.data[0].embedding;
 }
 
