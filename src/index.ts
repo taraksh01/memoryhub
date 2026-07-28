@@ -43,6 +43,29 @@ function removePid() {
 
 const cmd = process.argv[2];
 
+function showHelp() {
+  console.log(`memoryhub v${version}
+
+Usage:
+  memoryhub              Start MCP server in stdio mode
+  memoryhub serve        Start HTTP/SSE server
+  memoryhub start        Daemon mode (background)
+  memoryhub stop         Stop daemon
+  memoryhub status       Check daemon status
+  memoryhub --help, -h   Show this help
+  memoryhub --version, -v Show version
+
+MCP tools:
+  add_memories, search_memory, list_memories, get_memory,
+  update_memory, delete_memories, delete_all_memories,
+  memory_stats, get_config, update_config, health_check
+
+Docs: https://github.com/taraksh01/memoryhub`);
+}
+
+if (cmd === "--help" || cmd === "-h") { showHelp(); process.exit(0); }
+if (cmd === "--version" || cmd === "-v") { console.log(version); process.exit(0); }
+
 if (cmd === "start") {
   const { fork } = await import("node:child_process");
   const child = fork(process.argv[1], ["serve"], { detached: true, stdio: "ignore" });
