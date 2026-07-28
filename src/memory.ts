@@ -2,7 +2,7 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 import { randomUUID } from "node:crypto";
 import { getConfig, QDRANT_URL, COLLECTION, VECTOR_SIZE } from "./config.js";
 
-const qdrant = new QdrantClient({ url: QDRANT_URL });
+const qdrant = new QdrantClient({ url: QDRANT_URL, timeout: 30_000 });
 
 interface ChatMessage {
   role: string;

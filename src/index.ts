@@ -5,10 +5,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ensureCollection, addMemories, searchMemories, listMemories, getMemory, updateMemory, deleteMemories, deleteAllMemories, getStats, healthCheck } from "./memory.js";
-import { MEMORYHUB_DIR, getAllConfig, setConfig } from "./config.js";
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { MEMORYHUB_DIR, QDRANT_URL, getAllConfig, setConfig } from "./config.js";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { spawn, execSync } from "node:child_process";
+import os from "node:os";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -41,7 +43,7 @@ function removePid() {
   if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
 }
 
-const cmd = process.argv[2];
+let cmd = process.argv[2];
 
 function showHelp() {
   console.log(`memoryhub v${version}
@@ -52,6 +54,9 @@ Usage:
   memoryhub start        Daemon mode (background)
   memoryhub stop         Stop daemon
   memoryhub status       Check daemon status
+  memoryhub bootstrap    Serve + auto-start Qdrant if not running
+  memoryhub install      Install auto-start service for current user
+  memoryhub uninstall    Remove auto-start service
   memoryhub --help, -h   Show this help
   memoryhub --version, -v Show version
 
@@ -65,6 +70,120 @@ Docs: https://github.com/taraksh01/memoryhub`);
 
 if (cmd === "--help" || cmd === "-h") { showHelp(); process.exit(0); }
 if (cmd === "--version" || cmd === "-v") { console.log(version); process.exit(0); }
+
+function qdrantHealthUrl() {
+  return QDRANT_URL.replace(/\/$/, '') + '/health';
+}
+
+async function ensureQdrant(): Promise<void> {
+  try {
+    const res = await fetch(qdrantHealthUrl());
+    if (res.ok) return;
+  } catch {}
+  try {
+    const child = spawn("qdrant", [], { detached: true, stdio: "ignore" });
+    child.on("error", () => {});
+    child.unref();
+  } catch {}
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try { if ((await fetch(qdrantHealthUrl())).ok) return; } catch {}
+  }
+  throw new Error("Qdrant failed to start – start it manually and retry");
+}
+
+if (cmd === "bootstrap") {
+  try {
+    await ensureQdrant();
+  } catch (e) {
+    console.error("memoryhub:", (e instanceof Error ? e.message : e));
+    process.exit(1);
+  }
+  cmd = "serve";
+}
+
+if (cmd === "install") {
+  const scriptPath = process.argv[1];
+  const platform = process.platform;
+  if (platform === "linux") {
+    const service = `[Unit]
+Description=Memory Hub MCP Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${process.execPath} ${scriptPath} bootstrap
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+`;
+    const dir = join(os.homedir(), ".config/systemd/user");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "memoryhub.service"), service);
+    execSync("systemctl --user daemon-reload", { stdio: "inherit" });
+    execSync("systemctl --user enable memoryhub.service", { stdio: "inherit" });
+    console.log("memoryhub: installed as systemd user service");
+  } else if (platform === "darwin") {
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.memoryhub</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${process.execPath}</string>
+    <string>${scriptPath}</string>
+    <string>bootstrap</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>`;
+    const dir = join(os.homedir(), "Library/LaunchAgents");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "com.memoryhub.plist"), plist);
+    execSync("launchctl load " + join(dir, "com.memoryhub.plist"), { stdio: "inherit" });
+    console.log("memoryhub: installed as launchd agent");
+  } else if (platform === "win32") {
+    const startupDir = join(os.homedir(), "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup");
+    mkdirSync(startupDir, { recursive: true });
+    const vbs = `CreateObject("WScript.Shell").Run "${process.execPath} ${scriptPath} bootstrap", 0, False`;
+    writeFileSync(join(startupDir, "memoryhub.bat"), `@echo off\nstart /b "" "${process.execPath}" "${scriptPath}" bootstrap`);
+    writeFileSync(join(startupDir, "memoryhub.vbs"), vbs);
+    console.log("memoryhub: installed in Windows Startup folder");
+  } else {
+    console.log("memoryhub: unsupported platform – add manual startup: " + process.execPath + " " + scriptPath + " bootstrap");
+  }
+  process.exit(0);
+}
+
+if (cmd === "uninstall") {
+  const platform = process.platform;
+  if (platform === "linux") {
+    const servicePath = join(os.homedir(), ".config/systemd/user/memoryhub.service");
+    try { execSync("systemctl --user disable memoryhub.service", { stdio: "ignore" }); } catch {}
+    if (existsSync(servicePath)) unlinkSync(servicePath);
+    execSync("systemctl --user daemon-reload", { stdio: "ignore" });
+    console.log("memoryhub: removed systemd user service");
+  } else if (platform === "darwin") {
+    const plistPath = join(os.homedir(), "Library/LaunchAgents/com.memoryhub.plist");
+    try { execSync("launchctl unload " + plistPath, { stdio: "ignore" }); } catch {}
+    if (existsSync(plistPath)) unlinkSync(plistPath);
+    console.log("memoryhub: removed launchd agent");
+  } else if (platform === "win32") {
+    const dir = join(os.homedir(), "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup");
+    for (const f of ["memoryhub.bat", "memoryhub.vbs"]) {
+      const p = join(dir, f);
+      if (existsSync(p)) unlinkSync(p);
+    }
+    console.log("memoryhub: removed from Windows Startup folder");
+  }
+  process.exit(0);
+}
 
 if (cmd === "start") {
   const { fork } = await import("node:child_process");
@@ -149,7 +268,10 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
 });
 
 if (cmd === "serve") {
-  await ensureCollection();
+  try { await ensureCollection(); } catch {
+    console.error("memoryhub: Qdrant unreachable at " + QDRANT_URL + ". Start it or run `memoryhub bootstrap`");
+    process.exit(1);
+  }
   const transports = new Map<string, SSEServerTransport>();
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -173,7 +295,10 @@ if (cmd === "serve") {
   process.on("SIGTERM", () => { removePid(); process.exit(0); });
   process.on("SIGINT", () => { removePid(); process.exit(0); });
 } else {
-  await ensureCollection();
+  try { await ensureCollection(); } catch {
+    console.error("memoryhub: Qdrant unreachable at " + QDRANT_URL + ". Start it or run `memoryhub bootstrap`");
+    process.exit(1);
+  }
   const transport = new StdioServerTransport();
   mcpServer.connect(transport);
 }
