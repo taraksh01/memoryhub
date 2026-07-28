@@ -93,12 +93,21 @@ If your embedder matches your LLM provider, you can omit `embedder` — it falls
 |------|-------------|
 | `add_memories` | Store text (LLM extracts facts, embeds them) |
 | `search_memory` | Semantic search with optional limit |
-| `list_memories` | List all stored memories |
+| `list_memories` | List memories with pagination (`limit`, `offset`) |
 | `get_memory` | Get a single memory by ID |
 | `update_memory` | Update a memory's text (re-embeds) |
 | `delete_memories` | Delete specific memories by IDs |
 | `delete_all_memories` | Delete ALL memories |
 | `memory_stats` | Collection statistics |
+| `get_config` | Show current runtime configuration |
+| `update_config` | Update a config value at runtime (not persisted) |
+| `health_check` | Check connectivity to Qdrant |
+
+> Config changes via `update_config` are in-memory only — lost on restart. Use config file or env vars for permanent changes.
+
+## Retry
+
+LLM and embedding API calls retry up to 3 times on transient errors (rate limits, server errors) with exponential backoff.
 
 ## Transport Modes
 
