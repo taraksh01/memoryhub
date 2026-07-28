@@ -74,7 +74,7 @@ async function embed(text: string): Promise<number[]> {
 
 async function extractMemories(text: string): Promise<string[]> {
   const raw = await llm([
-    { role: "system", content: "Extract factual statements worth remembering from the text. Return ONLY a JSON array of strings. Example: [\"User likes pizza.\", \"User lives in Tokyo.\"]" },
+    { role: "system", content: "Extract information worth remembering from the text. Use your judgment: keep related facts together in one string, split unrelated facts into separate strings. Return ONLY a JSON array of strings." },
     { role: "user", content: text },
   ]);
   const cleaned = raw.replace(/```json\s*|```\s*/g, "").trim();
