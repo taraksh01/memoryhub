@@ -65,7 +65,11 @@ async function extractMemories(text: string): Promise<string[]> {
     { role: "user", content: text },
   ]);
   const cleaned = raw.replace(/```json\s*|```\s*/g, "").trim();
-  return JSON.parse(cleaned);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    throw new Error(`LLM returned invalid JSON: ${cleaned.slice(0, 200)}`);
+  }
 }
 
 export async function addMemories(text: string) {

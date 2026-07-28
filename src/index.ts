@@ -1,13 +1,17 @@
 #!/usr/bin/env node
+import { createRequire } from "node:module";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ensureCollection, addMemories, searchMemories, listMemories, getMemory, updateMemory, deleteMemories, deleteAllMemories, getStats } from "./memory.js";
-import { existsSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+
+const require = createRequire(import.meta.url);
+const { version } = require("../package.json");
 
 const PID_FILE = join(homedir(), ".memoryhub", "hub.pid");
 const PORT = Number(process.env.MEMORYHUB_PORT) || 9876;
@@ -18,6 +22,10 @@ interface ToolArgs {
   limit?: number;
   memory_id?: string;
   ids?: string[];
+}
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
 }
 
 function readPid(): number | null {
@@ -66,7 +74,7 @@ if (cmd === "status") {
   process.exit(0);
 }
 
-const mcpServer = new Server({ name: "memoryhub", version: "0.1.0" }, { capabilities: { tools: {} } });
+const mcpServer = new Server({ name: "memoryhub", version }, { capabilities: { tools: {} } });
 
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -87,14 +95,14 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     let result: string;
     switch (name) {
-      case "add_memories": result = await addMemories(a.text!); break;
-      case "search_memory": result = await searchMemories(a.query!, a.limit); break;
-      case "list_memories": result = await listMemories(); break;
-      case "get_memory": result = await getMemory(a.memory_id!); break;
-      case "update_memory": result = await updateMemory(a.memory_id!, a.text!); break;
-      case "delete_memories": result = await deleteMemories(a.ids!); break;
-      case "delete_all_memories": result = await deleteAllMemories(); break;
-      case "memory_stats": result = await getStats(); break;
+      case "add_memories": { assert(typeof a.text === "string" && a.text, "text is required"); result = await addMemories(a.text); break; }
+      case "search_memory": { assert(typeof a.query === "string" && a.query, "query is required"); result = await searchMemories(a.query, a.limit ?? 10); break; }
+      case "list_memories": { result = await listMemories(); break; }
+      case "get_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required"); result = await getMemory(a.memory_id); break; }
+      case "update_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required"); assert(typeof a.text === "string" && a.text, "text is required"); result = await updateMemory(a.memory_id, a.text); break; }
+      case "delete_memories": { assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array"); result = await deleteMemories(a.ids); break; }
+      case "delete_all_memories": { result = await deleteAllMemories(); break; }
+      case "memory_stats": { result = await getStats(); break; }
       default: throw new Error(`Unknown tool: ${name}`);
     }
     return { content: [{ type: "text", text: result }] };
