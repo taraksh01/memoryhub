@@ -19,7 +19,7 @@ npx @taraksh011/memoryhub
 ## Quick Start
 
 ```bash
-# Start Qdrant (Docker)
+# Start Qdrant (see docs/install-qdrant.md for help)
 docker run -p 6333:6333 qdrant/qdrant
 
 # Start memoryhub in stdio mode (for MCP clients)
@@ -35,7 +35,7 @@ memoryhub stop
 
 Memory Hub needs three things:
 
-1. **Qdrant** — vector database for storing memories
+1. **Qdrant** — vector database ([install guide](docs/install-qdrant.md))
 2. **LLM API** — extracts facts from text (e.g. OpenAI, Anthropic, local Ollama)
 3. **Embedding API** — converts text to vectors (e.g. OpenAI `text-embedding-3-small`, local Ollama)
 
@@ -108,6 +108,21 @@ If your embedder matches your LLM provider, you can omit `embedder` — it falls
 ## Retry
 
 LLM and embedding API calls retry up to 3 times on transient errors (rate limits, server errors) with exponential backoff.
+
+## CLI
+
+| Command | Description |
+|---------|-------------|
+| `memoryhub` | Start MCP server in stdio mode |
+| `memoryhub serve` | Start HTTP/SSE server |
+| `memoryhub start` | Daemon mode (background) |
+| `memoryhub stop` | Stop daemon |
+| `memoryhub status` | Check daemon status |
+| `memoryhub bootstrap` | Auto-start Qdrant if needed, then serve |
+| `memoryhub install` | Install auto-start service (systemd/launchd/Windows) |
+| `memoryhub uninstall` | Remove auto-start service |
+| `memoryhub --help` | Show help |
+| `memoryhub --version` | Show version |
 
 ## Transport Modes
 
