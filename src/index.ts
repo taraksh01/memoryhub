@@ -5,15 +5,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ensureCollection, addMemories, searchMemories, listMemories, getMemory, updateMemory, deleteMemories, deleteAllMemories, getStats } from "./memory.js";
+import { MEMORYHUB_DIR } from "./config.js";
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
-const PID_FILE = join(homedir(), ".memoryhub", "hub.pid");
+const PID_FILE = join(MEMORYHUB_DIR, "hub.pid");
 const PORT = Number(process.env.MEMORYHUB_PORT) || 9876;
 
 interface ToolArgs {
