@@ -16,7 +16,6 @@ const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
 const PID_FILE = join(MEMORYHUB_DIR, "hub.pid");
-const PORT = Number(process.env.MEMORYHUB_PORT) || 9876;
 
 interface ToolArgs {
   text?: string;
@@ -121,8 +120,8 @@ WantedBy=default.target
     const dir = join(os.homedir(), ".config/systemd/user");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "memoryhub.service"), service);
-    execSync("systemctl --user daemon-reload", { stdio: "inherit" });
-    execSync("systemctl --user enable memoryhub.service", { stdio: "inherit" });
+    try { execSync("systemctl --user daemon-reload", { stdio: "inherit" }); } catch { console.error("memoryhub: failed to reload systemd"); process.exit(1); }
+    try { execSync("systemctl --user enable memoryhub.service", { stdio: "inherit" }); } catch { console.error("memoryhub: failed to enable service"); process.exit(1); }
     console.log("memoryhub: installed as systemd user service");
   } else if (platform === "darwin") {
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -146,7 +145,8 @@ WantedBy=default.target
     const dir = join(os.homedir(), "Library/LaunchAgents");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "com.memoryhub.plist"), plist);
-    execSync("launchctl load " + join(dir, "com.memoryhub.plist"), { stdio: "inherit" });
+    try { execSync("launchctl unload " + join(dir, "com.memoryhub.plist"), { stdio: "ignore" }); } catch {}
+    try { execSync("launchctl load " + join(dir, "com.memoryhub.plist"), { stdio: "inherit" }); } catch { console.error("memoryhub: failed to load launchd agent"); process.exit(1); }
     console.log("memoryhub: installed as launchd agent");
   } else if (platform === "win32") {
     const startupDir = join(os.homedir(), "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup");
@@ -203,7 +203,7 @@ if (cmd === "stop") {
       await new Promise(r => setTimeout(r, 200));
       if (!readPid()) { console.log("memoryhub stopped"); process.exit(0); }
     }
-    process.kill(pid, "SIGKILL");
+    try { process.kill(pid, "SIGKILL"); } catch { /* SIGKILL not available on Windows */ }
     removePid();
     console.log("memoryhub force killed");
   } catch {
@@ -221,6 +221,12 @@ if (cmd === "status") {
     console.log("memoryhub: running (PID %d)", pid);
   } catch { removePid(); console.log("memoryhub: stopped (stale PID)"); }
   process.exit(0);
+}
+
+if (cmd !== undefined && cmd !== "serve" && cmd !== "bootstrap") {
+  console.error("memoryhub: unknown command '%s'", cmd);
+  showHelp();
+  process.exit(1);
 }
 
 const mcpServer = new Server({ name: "memoryhub", version }, { capabilities: { tools: {} } });
@@ -291,7 +297,8 @@ if (cmd === "serve") {
   });
 
   writeFileSync(PID_FILE, String(process.pid));
-  httpServer.listen(PORT, () => console.log("memoryhub serving on http://localhost:%d", PORT));
+  const port = Number(process.env.MEMORYHUB_PORT) || 9876;
+  httpServer.listen(port, () => console.log("memoryhub serving on http://localhost:%d", port));
   process.on("SIGTERM", () => { removePid(); process.exit(0); });
   process.on("SIGINT", () => { removePid(); process.exit(0); });
 } else {

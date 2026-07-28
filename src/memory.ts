@@ -1,6 +1,6 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { randomUUID } from "node:crypto";
-import { getConfig, QDRANT_URL, COLLECTION, VECTOR_SIZE } from "./config.js";
+import { getConfig, QDRANT_URL } from "./config.js";
 
 const qdrant = new QdrantClient({ url: QDRANT_URL, timeout: 30_000 });
 
@@ -68,6 +68,7 @@ async function embed(text: string): Promise<number[]> {
       throw err;
     }
     const d: EmbeddingResponse = await r.json();
+    if (!d.data?.[0]?.embedding) throw new Error("Embed API returned empty response");
     return d.data[0].embedding;
   });
 }
@@ -78,23 +79,30 @@ async function extractMemories(text: string): Promise<string[]> {
     { role: "user", content: text },
   ]);
   const cleaned = raw.replace(/```json\s*|```\s*/g, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
+  let parsed: unknown;
+  try { parsed = JSON.parse(cleaned); } catch {
     throw new Error(`LLM returned invalid JSON: ${cleaned.slice(0, 200)}`);
   }
+  if (!Array.isArray(parsed) || !parsed.every(f => typeof f === "string")) {
+    throw new Error(`LLM returned non-array: ${cleaned.slice(0, 200)}`);
+  }
+  return parsed;
 }
 
 export async function ensureCollection() {
   const cols = await qdrant.getCollections();
-  if (!cols.collections.some(c => c.name === COLLECTION)) {
-    await qdrant.createCollection(COLLECTION, {
-      vectors: { size: VECTOR_SIZE, distance: "Cosine" },
+  const colName = getConfig("COLLECTION");
+  if (!cols.collections.some(c => c.name === colName)) {
+    await qdrant.createCollection(colName, {
+      vectors: { size: Number(getConfig("VECTOR_SIZE")) || 768, distance: "Cosine" },
     });
   }
 }
 
+const MAX_INPUT = 50_000;
+
 export async function addMemories(text: string) {
+  if (text.length > MAX_INPUT) throw new Error(`Input too long (${text.length} chars, max ${MAX_INPUT})`);
   const facts = await extractMemories(text);
   const points = [];
   for (const fact of facts) {

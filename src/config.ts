@@ -16,7 +16,9 @@ function env(key: string, fallback: string): string {
 
 function num(key: string, fallback: number): number {
   const v = process.env[key];
-  return v !== undefined ? Number(v) : fallback;
+  if (v === undefined) return fallback;
+  const n = Number(v);
+  return isNaN(n) ? fallback : n;
 }
 
 export const MEMORYHUB_DIR = env("MEMORYHUB_DIR", join(homedir(), ".memoryhub"));
@@ -30,7 +32,7 @@ function loadConfig(): MemoryHubConfig {
 
   for (const p of paths) {
     if (existsSync(p)) {
-      return JSON.parse(readFileSync(p, "utf-8"));
+      try { return JSON.parse(readFileSync(p, "utf-8")); } catch {}
     }
   }
   return {};
