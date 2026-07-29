@@ -100,10 +100,18 @@ async function extractMemories(text: string): Promise<string[]> {
 export async function ensureCollection() {
   const cols = await qdrant.getCollections();
   const colName = getConfig("COLLECTION");
-  if (!cols.collections.some(c => c.name === colName)) {
+  const cfgSize = Number(getConfig("VECTOR_SIZE")) || 768;
+  const existing = cols.collections.find(c => c.name === colName);
+  if (!existing) {
     await qdrant.createCollection(colName, {
-      vectors: { size: Number(getConfig("VECTOR_SIZE")) || 768, distance: "Cosine" },
+      vectors: { size: cfgSize, distance: "Cosine" },
     });
+  } else {
+    const info = await qdrant.getCollection(colName);
+    const actual = info.config?.params?.vectors?.size;
+    if (actual && actual !== cfgSize) {
+      console.error(`memoryhub: collection "${colName}" has vector size ${actual}, but config specifies ${cfgSize}`);
+    }
   }
 }
 
