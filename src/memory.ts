@@ -17,13 +17,21 @@ interface EmbeddingResponse {
   data: { embedding: number[] }[];
 }
 
+interface ErrorWithStatus extends Error {
+  status: number;
+}
+
+function getStatus(e: unknown): number {
+  return e instanceof Error && "status" in e ? (e as ErrorWithStatus).status : 0;
+}
+
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await fn();
     } catch (e) {
       if (attempt >= 3) throw e;
-      const status = e instanceof Error && "status" in e ? (e as any).status : 0;
+      const status = getStatus(e);
       if (status && status < 429) throw e;
       await new Promise(r => setTimeout(r, 1000 * attempt));
     }
@@ -42,8 +50,8 @@ async function llm(messages: ChatMessage[]): Promise<string> {
     });
     if (!r.ok) {
       const body = await r.text();
-      const err = new Error(`LLM ${r.status}: ${body.slice(0, 300)}`);
-      (err as any).status = r.status;
+      const err = new Error(`LLM ${r.status}: ${body.slice(0, 300)}`) as ErrorWithStatus;
+      err.status = r.status;
       throw err;
     }
     const d: ChatResponse = await r.json();
@@ -63,8 +71,8 @@ async function embed(text: string): Promise<number[]> {
     });
     if (!r.ok) {
       const body = await r.text();
-      const err = new Error(`Embed ${r.status}: ${body.slice(0, 300)}`);
-      (err as any).status = r.status;
+      const err = new Error(`Embed ${r.status}: ${body.slice(0, 300)}`) as ErrorWithStatus;
+      err.status = r.status;
       throw err;
     }
     const d: EmbeddingResponse = await r.json();
@@ -119,19 +127,19 @@ export async function searchMemories(query: string, limit: number = 10, project?
   const vector = await embed(query);
   const filter = project ? { must: [{ key: "project", match: { value: project } }] } : undefined;
   const r = await qdrant.search(getConfig("COLLECTION"), { vector, limit, with_payload: true, filter });
-  return JSON.stringify(r.map(p => ({ id: p.id, text: (p.payload as any)?.text, score: p.score })), null, 2);
+  return JSON.stringify(r.map(p => ({ id: p.id, text: String(p.payload?.text ?? ""), score: p.score })), null, 2);
 }
 
 export async function listMemories(limit: number = 100, offset?: string, project?: string) {
   const filter = project ? { must: [{ key: "project", match: { value: project } }] } : undefined;
   const r = await qdrant.scroll(getConfig("COLLECTION"), { limit, offset, with_payload: true, filter });
-  return JSON.stringify({ memories: r.points.map(p => ({ id: p.id, text: (p.payload as any)?.text })), next_offset: r.next_page_offset }, null, 2);
+  return JSON.stringify({ memories: r.points.map(p => ({ id: p.id, text: String(p.payload?.text ?? "") })), next_offset: r.next_page_offset }, null, 2);
 }
 
 export async function getMemory(memory_id: string) {
   const r = await qdrant.retrieve(getConfig("COLLECTION"), { ids: [memory_id], with_payload: true });
   if (!r.length) return JSON.stringify({ error: "Memory not found" });
-  return JSON.stringify({ id: r[0].id, text: (r[0].payload as any)?.text }, null, 2);
+  return JSON.stringify({ id: r[0].id, text: String(r[0].payload?.text ?? "") }, null, 2);
 }
 
 export async function updateMemory(memory_id: string, text: string) {

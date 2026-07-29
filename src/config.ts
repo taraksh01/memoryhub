@@ -14,6 +14,10 @@ function env(key: string, fallback: string): string {
   return process.env[key] || fallback;
 }
 
+function envEither(a: string, b: string, fallback: string): string {
+  return process.env[a] || process.env[b] || fallback;
+}
+
 function num(key: string, fallback: number): number {
   const v = process.env[key];
   if (v === undefined) return fallback;
