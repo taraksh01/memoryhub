@@ -287,7 +287,8 @@ if (cmd === "serve") {
       mcpServer.connect(transport);
       req.on("close", () => { transports.delete(transport.sessionId); transport.close(); });
     } else if (req.method === "POST" && req.url?.startsWith("/mcp/message")) {
-      const sessionId = req.url.split("/").pop() || "";
+      const url = `http://localhost${req.url}`;
+      const sessionId = new URL(url).searchParams.get("sessionId") || req.url.split("/").pop() || "";
       const transport = transports.get(sessionId);
       if (transport) await transport.handlePostMessage(req, res);
       else { res.writeHead(404).end("Session not found"); }
