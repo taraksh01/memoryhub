@@ -22,13 +22,16 @@ npx @taraksh011/memoryhub
 # Start Qdrant (see docs/install-qdrant.md for help)
 docker run -p 6333:6333 qdrant/qdrant
 
+# Set API credentials (or use config file)
+export LLM_BASE=https://api.openai.com/v1
+export LLM_KEY=sk-...
+export LLM_MODEL=gpt-4o-mini
+
 # Start memoryhub in stdio mode (for MCP clients)
 memoryhub
 
-# Or as a daemon
-memoryhub start
-memoryhub status
-memoryhub stop
+# Or auto-start Qdrant + serve in one step
+memoryhub bootstrap
 ```
 
 ## Prerequisites
@@ -73,35 +76,48 @@ If your embedder matches your LLM provider, you can omit `embedder` — it falls
 
 ### Environment variables
 
-| Env Var | Default | Description |
-|---------|---------|-------------|
-| `MEMORYHUB_DIR` | `~/.memoryhub` | Base directory for config and data files |
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
-| `MEMORYHUB_COLLECTION` | `memories` | Collection name |
-| `MEMORYHUB_VECTOR_SIZE` | `768` | Vector dimension |
-| `LLM_MODEL` | — | LLM model for extraction |
-| `LLM_BASE_URL` | — | LLM API base URL |
-| `LLM_API_KEY` | — | LLM API key |
-| `EMBED_MODEL` | — | Embedding model (falls back to LLM_MODEL) |
-| `EMBED_BASE_URL` | — | Embedding API base URL (falls back to LLM_BASE_URL) |
-| `EMBED_API_KEY` | — | Embedding API key (falls back to LLM_API_KEY) |
-| `MEMORYHUB_PORT` | `9876` | Port for HTTP/SSE mode |
+Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `LLM_API_KEY`) are supported for backward compatibility.
+
+| Env Var | Short Alias | Default | Description |
+|---------|-------------|---------|-------------|
+| `MEMORYHUB_DIR` | — | `~/.memoryhub` | Base directory for config and data files |
+| `QDRANT_URL` | — | `http://localhost:6333` | Qdrant server URL |
+| `MEMORYHUB_COLLECTION` | — | `memories` | Collection name |
+| `MEMORYHUB_VECTOR_SIZE` | — | `768` | Vector dimension |
+| `LLM_MODEL` | — | — | LLM model for extraction |
+| `LLM_BASE_URL` | `LLM_BASE` | — | LLM API base URL |
+| `LLM_API_KEY` | `LLM_KEY` | — | LLM API key |
+| `EMBED_MODEL` | — | — | Embedding model (falls back to LLM_MODEL) |
+| `EMBED_BASE_URL` | `EMBED_BASE` | — | Embedding API base URL (falls back to LLM_BASE) |
+| `EMBED_API_KEY` | `EMBED_KEY` | — | Embedding API key (falls back to LLM_KEY) |
+| `MEMORYHUB_PORT` | — | `9876` | Port for HTTP/SSE mode |
+
+## Memory Scopes
+
+Memories can be **global** or **project-scoped**:
+
+- Omit `project` → memory is global (visible to all searches)
+- Pass `project="my-repo"` → memory is scoped to that project
+- Search/list without `project` → returns all memories (global + all projects)
+- Search/list with `project="my-repo"` → returns only that project's memories
+
+Use scopes to keep memories isolated per repo, per feature, or any other boundary.
 
 ## MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| `add_memories` | Store text (LLM extracts facts, embeds them) |
-| `search_memory` | Semantic search with optional limit |
-| `list_memories` | List memories with pagination (`limit`, `offset`) |
-| `get_memory` | Get a single memory by ID |
-| `update_memory` | Update a memory's text (re-embeds) |
-| `delete_memories` | Delete specific memories by IDs |
-| `delete_all_memories` | Delete ALL memories |
-| `memory_stats` | Collection statistics |
-| `get_config` | Show current runtime configuration |
-| `update_config` | Update a config value at runtime (not persisted) |
-| `health_check` | Check connectivity to Qdrant |
+| Tool | Description | Scope Support |
+|------|-------------|---------------|
+| `add_memories` | Store text (LLM extracts facts, embeds them) | Optional `project` |
+| `search_memory` | Semantic search with optional limit | Optional `project` filter |
+| `list_memories` | List memories with pagination (`limit`, `offset` as cursor from `next_offset`) | Optional `project` filter |
+| `get_memory` | Get a single memory by ID | — |
+| `update_memory` | Update a memory's text (re-embeds) | — |
+| `delete_memories` | Delete specific memories by IDs | — |
+| `delete_all_memories` | Delete ALL memories (or filter by project) | Optional `project` filter, returns count |
+| `memory_stats` | Collection statistics | — |
+| `get_config` | Show current runtime configuration (API keys masked) | — |
+| `update_config` | Update a config value at runtime (not persisted) | — |
+| `health_check` | Check connectivity to Qdrant | — |
 
 > Config changes via `update_config` are in-memory only — lost on restart. Use config file or env vars for permanent changes.
 
