@@ -76,9 +76,18 @@ export function setConfig(key: string, value: string): void {
   overrides[key] = value;
 }
 
+function mask(val: string): string {
+  if (!val || val.length < 8) return "****";
+  return val.slice(0, 4) + "****" + val.slice(-4);
+}
+
 export function getAllConfig(): Record<string, string> {
   const keys = ["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY"];
+  const sensitive = new Set(["LLM_KEY", "EMBED_KEY"]);
   const result: Record<string, string> = {};
-  for (const k of keys) result[k] = getConfig(k);
+  for (const k of keys) {
+    const v = getConfig(k);
+    result[k] = sensitive.has(k) ? mask(v) : v;
+  }
   return result;
 }
