@@ -4,3 +4,4 @@ dist/
 pnpm-workspace.yaml
 .qdrant-initialized
 storage/
+test-comprehensive.mjs
