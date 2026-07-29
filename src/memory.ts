@@ -82,19 +82,30 @@ async function embed(text: string): Promise<number[]> {
 }
 
 async function extractMemories(text: string): Promise<string[]> {
-  const raw = await llm([
-    { role: "system", content: "Extract information worth remembering from the text. Use your judgment: keep related facts together in one string, split unrelated facts into separate strings. Return ONLY a JSON array of strings." },
-    { role: "user", content: text },
-  ]);
-  const cleaned = raw.replace(/```json\s*|```\s*/g, "").trim();
-  let parsed: unknown;
-  try { parsed = JSON.parse(cleaned); } catch {
-    throw new Error(`LLM returned invalid JSON: ${cleaned.slice(0, 200)}`);
+  let lastError: string = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const raw = await llm([
+        { role: "system", content: "Extract information worth remembering from the text. Use your judgment: keep related facts together in one string, split unrelated facts into separate strings. Return ONLY a JSON array of strings." },
+        { role: "user", content: text },
+      ]);
+      const cleaned = raw.replace(/```json\s*|```\s*/g, "").trim();
+      let parsed: unknown;
+      try { parsed = JSON.parse(cleaned); } catch {
+        lastError = `invalid JSON: ${cleaned.slice(0, 200)}`;
+        continue;
+      }
+      if (!Array.isArray(parsed) || !parsed.every(f => typeof f === "string")) {
+        lastError = `non-array: ${cleaned.slice(0, 200)}`;
+        continue;
+      }
+      return parsed;
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+    }
   }
-  if (!Array.isArray(parsed) || !parsed.every(f => typeof f === "string")) {
-    throw new Error(`LLM returned non-array: ${cleaned.slice(0, 200)}`);
-  }
-  return parsed;
+  console.error(`memoryhub: LLM extraction failed (${lastError}) — storing raw text`);
+  return [text];
 }
 
 export async function ensureCollection() {
@@ -134,13 +145,13 @@ export async function addMemories(text: string, project?: string) {
 export async function searchMemories(query: string, limit: number = 10, project?: string) {
   const vector = await embed(query);
   const filter = project ? { must: [{ key: "project", match: { value: project } }] } : undefined;
-  const r = await qdrant.search(getConfig("COLLECTION"), { vector, limit, with_payload: true, filter });
+  const r = await qdrant.search(getConfig("COLLECTION"), { vector, limit: Math.max(1, limit), with_payload: true, filter });
   return JSON.stringify(r.map(p => ({ id: p.id, text: String(p.payload?.text ?? ""), score: p.score })), null, 2);
 }
 
 export async function listMemories(limit: number = 100, offset?: string, project?: string) {
   const filter = project ? { must: [{ key: "project", match: { value: project } }] } : undefined;
-  const r = await qdrant.scroll(getConfig("COLLECTION"), { limit, offset, with_payload: true, filter });
+  const r = await qdrant.scroll(getConfig("COLLECTION"), { limit: Math.max(1, limit), offset, with_payload: true, filter });
   return JSON.stringify({ memories: r.points.map(p => ({ id: p.id, text: String(p.payload?.text ?? "") })), next_offset: r.next_page_offset }, null, 2);
 }
 
@@ -151,9 +162,10 @@ export async function getMemory(memory_id: string) {
 }
 
 export async function updateMemory(memory_id: string, text: string) {
+  const existing = await qdrant.retrieve(getConfig("COLLECTION"), { ids: [memory_id], with_payload: true });
+  if (!existing.length) return JSON.stringify({ error: "Memory not found" });
   const vector = await embed(text);
-  const old = await qdrant.retrieve(getConfig("COLLECTION"), { ids: [memory_id], with_payload: true });
-  const oldProject = old[0]?.payload?.project;
+  const oldProject = existing[0].payload?.project;
   const payload: Record<string, unknown> = { text, timestamp: Date.now() };
   if (oldProject) payload.project = oldProject;
   await qdrant.upsert(getConfig("COLLECTION"), { points: [{ id: memory_id, vector, payload }], wait: true });
