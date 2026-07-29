@@ -152,7 +152,11 @@ export async function getMemory(memory_id: string) {
 
 export async function updateMemory(memory_id: string, text: string) {
   const vector = await embed(text);
-  await qdrant.upsert(getConfig("COLLECTION"), { points: [{ id: memory_id, vector, payload: { text, timestamp: Date.now() } }], wait: true });
+  const old = await qdrant.retrieve(getConfig("COLLECTION"), { ids: [memory_id], with_payload: true });
+  const oldProject = old[0]?.payload?.project;
+  const payload: Record<string, unknown> = { text, timestamp: Date.now() };
+  if (oldProject) payload.project = oldProject;
+  await qdrant.upsert(getConfig("COLLECTION"), { points: [{ id: memory_id, vector, payload }], wait: true });
   return JSON.stringify({ updated: memory_id });
 }
 

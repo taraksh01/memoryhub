@@ -48,11 +48,11 @@ export const QDRANT_URL = env("QDRANT_URL", cfg.qdrant?.url || "http://localhost
 export const COLLECTION = env("MEMORYHUB_COLLECTION", cfg.collection || "memories");
 export const VECTOR_SIZE = num("MEMORYHUB_VECTOR_SIZE", cfg.vector_size || 768);
 export const LLM_MODEL = env("LLM_MODEL", cfg.llm?.model || "");
-export const LLM_BASE = env("LLM_BASE_URL", cfg.llm?.base_url || "");
-export const LLM_KEY = env("LLM_API_KEY", cfg.llm?.api_key || "");
+export const LLM_BASE = envEither("LLM_BASE", "LLM_BASE_URL", cfg.llm?.base_url || "");
+export const LLM_KEY = envEither("LLM_KEY", "LLM_API_KEY", cfg.llm?.api_key || "");
 export const EMBED_MODEL = env("EMBED_MODEL", cfg.embedder?.model || "");
-export const EMBED_BASE = env("EMBED_BASE_URL", cfg.embedder?.base_url || "");
-export const EMBED_KEY = env("EMBED_API_KEY", cfg.embedder?.api_key || "");
+export const EMBED_BASE = envEither("EMBED_BASE", "EMBED_BASE_URL", cfg.embedder?.base_url || "");
+export const EMBED_KEY = envEither("EMBED_KEY", "EMBED_API_KEY", cfg.embedder?.api_key || "");
 
 const overrides: Record<string, string> = {};
 
