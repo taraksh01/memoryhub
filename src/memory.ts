@@ -163,8 +163,9 @@ export async function deleteMemories(ids: string[]) {
 
 export async function deleteAllMemories(project?: string) {
   const filter = project ? { must: [{ key: "project", match: { value: project } }] } : {};
+  const countResp = await qdrant.count(getConfig("COLLECTION"), { filter });
   await qdrant.delete(getConfig("COLLECTION"), { filter });
-  return JSON.stringify({ deleted: project ? `all project=${project}` : "all" });
+  return JSON.stringify({ deleted: countResp.count ?? 0 });
 }
 
 export async function getStats() {
