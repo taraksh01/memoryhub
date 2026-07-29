@@ -240,7 +240,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: "get_memory", description: "Get a single memory by ID.", inputSchema: { type: "object", properties: { memory_id: { type: "string" } }, required: ["memory_id"] } },
     { name: "update_memory", description: "Update a memory's text (re-embeds).", inputSchema: { type: "object", properties: { memory_id: { type: "string" }, text: { type: "string" } }, required: ["memory_id", "text"] } },
     { name: "delete_memories", description: "Delete specific memories by IDs.", inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } }, required: ["ids"] } },
-    { name: "delete_all_memories", description: "Delete ALL memories.", inputSchema: { type: "object", properties: {} } },
+    { name: "delete_all_memories", description: "Delete ALL memories (or filter by project).", inputSchema: { type: "object", properties: { project: { type: "string" } } } },
     { name: "memory_stats", description: "Get collection statistics.", inputSchema: { type: "object", properties: {} } },
     { name: "get_config", description: "Show current runtime configuration.", inputSchema: { type: "object", properties: {} } },
     { name: "update_config", description: "Update a config value at runtime (not persisted).", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } }, required: ["key", "value"] } },
@@ -260,7 +260,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "get_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required"); result = await getMemory(a.memory_id); break; }
       case "update_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required"); assert(typeof a.text === "string" && a.text, "text is required"); result = await updateMemory(a.memory_id, a.text); break; }
       case "delete_memories": { assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array"); result = await deleteMemories(a.ids); break; }
-      case "delete_all_memories": { result = await deleteAllMemories(); break; }
+      case "delete_all_memories": { result = await deleteAllMemories(a.project); break; }
       case "memory_stats": { result = await getStats(); break; }
       case "get_config": { result = JSON.stringify(getAllConfig(), null, 2); break; }
       case "update_config": { assert(typeof a.key === "string" && a.key, "key is required"); assert(typeof a.value === "string", "value is required"); setConfig(a.key, a.value); result = JSON.stringify({ updated: a.key, value: a.value }); break; }

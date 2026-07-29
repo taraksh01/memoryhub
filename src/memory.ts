@@ -145,9 +145,10 @@ export async function deleteMemories(ids: string[]) {
   return JSON.stringify({ deleted: ids.length });
 }
 
-export async function deleteAllMemories() {
-  await qdrant.delete(getConfig("COLLECTION"), { filter: {} });
-  return JSON.stringify({ deleted: "all" });
+export async function deleteAllMemories(project?: string) {
+  const filter = project ? { must: [{ key: "project", match: { value: project } }] } : {};
+  await qdrant.delete(getConfig("COLLECTION"), { filter });
+  return JSON.stringify({ deleted: project ? `all project=${project}` : "all" });
 }
 
 export async function getStats() {
