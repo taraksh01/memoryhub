@@ -101,26 +101,30 @@ export async function ensureCollection() {
 
 const MAX_INPUT = 50_000;
 
-export async function addMemories(text: string) {
+export async function addMemories(text: string, project?: string) {
   if (text.length > MAX_INPUT) throw new Error(`Input too long (${text.length} chars, max ${MAX_INPUT})`);
   const facts = await extractMemories(text);
   const points = [];
   for (const fact of facts) {
     const vector = await embed(fact);
-    points.push({ id: randomUUID(), vector, payload: { text: fact, timestamp: Date.now() } });
+    const payload: Record<string, unknown> = { text: fact, timestamp: Date.now() };
+    if (project) payload.project = project;
+    points.push({ id: randomUUID(), vector, payload });
   }
   if (points.length) await qdrant.upsert(getConfig("COLLECTION"), { points, wait: true });
   return JSON.stringify({ added: points.length, memories: facts }, null, 2);
 }
 
-export async function searchMemories(query: string, limit: number = 10) {
+export async function searchMemories(query: string, limit: number = 10, project?: string) {
   const vector = await embed(query);
-  const r = await qdrant.search(getConfig("COLLECTION"), { vector, limit, with_payload: true });
+  const filter = project ? { must: [{ key: "project", match: { value: project } }] } : undefined;
+  const r = await qdrant.search(getConfig("COLLECTION"), { vector, limit, with_payload: true, filter });
   return JSON.stringify(r.map(p => ({ id: p.id, text: (p.payload as any)?.text, score: p.score })), null, 2);
 }
 
-export async function listMemories(limit: number = 100, offset?: number) {
-  const r = await qdrant.scroll(getConfig("COLLECTION"), { limit, offset, with_payload: true });
+export async function listMemories(limit: number = 100, offset?: string, project?: string) {
+  const filter = project ? { must: [{ key: "project", match: { value: project } }] } : undefined;
+  const r = await qdrant.scroll(getConfig("COLLECTION"), { limit, offset, with_payload: true, filter });
   return JSON.stringify({ memories: r.points.map(p => ({ id: p.id, text: (p.payload as any)?.text })), next_offset: r.next_page_offset }, null, 2);
 }
 

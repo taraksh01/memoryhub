@@ -21,11 +21,12 @@ interface ToolArgs {
   text?: string;
   query?: string;
   limit?: number;
-  offset?: number;
+  offset?: string;
   memory_id?: string;
   ids?: string[];
   key?: string;
   value?: string;
+  project?: string;
 }
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -233,9 +234,9 @@ const mcpServer = new Server({ name: "memoryhub", version }, { capabilities: { t
 
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    { name: "add_memories", description: "Store text (LLM extracts facts, embeds, stores).", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
-    { name: "search_memory", description: "Semantic search across stored memories.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"] } },
-    { name: "list_memories", description: "List stored memories with pagination.", inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "number" } } } },
+    { name: "add_memories", description: "Store text (LLM extracts facts, embeds, stores).", inputSchema: { type: "object", properties: { text: { type: "string" }, project: { type: "string" } }, required: ["text"] } },
+    { name: "search_memory", description: "Semantic search across stored memories.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, project: { type: "string" } }, required: ["query"] } },
+    { name: "list_memories", description: "List stored memories with pagination.", inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "string" }, project: { type: "string" } } } },
     { name: "get_memory", description: "Get a single memory by ID.", inputSchema: { type: "object", properties: { memory_id: { type: "string" } }, required: ["memory_id"] } },
     { name: "update_memory", description: "Update a memory's text (re-embeds).", inputSchema: { type: "object", properties: { memory_id: { type: "string" }, text: { type: "string" } }, required: ["memory_id", "text"] } },
     { name: "delete_memories", description: "Delete specific memories by IDs.", inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } }, required: ["ids"] } },
@@ -253,9 +254,9 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     let result: string;
     switch (name) {
-      case "add_memories": { assert(typeof a.text === "string" && a.text, "text is required"); result = await addMemories(a.text); break; }
-      case "search_memory": { assert(typeof a.query === "string" && a.query, "query is required"); result = await searchMemories(a.query, a.limit ?? 10); break; }
-      case "list_memories": { result = await listMemories(a.limit ?? 100, a.offset); break; }
+      case "add_memories": { assert(typeof a.text === "string" && a.text, "text is required"); result = await addMemories(a.text, a.project); break; }
+      case "search_memory": { assert(typeof a.query === "string" && a.query, "query is required"); result = await searchMemories(a.query, a.limit ?? 10, a.project); break; }
+      case "list_memories": { result = await listMemories(a.limit ?? 100, a.offset, a.project); break; }
       case "get_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required"); result = await getMemory(a.memory_id); break; }
       case "update_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required"); assert(typeof a.text === "string" && a.text, "text is required"); result = await updateMemory(a.memory_id, a.text); break; }
       case "delete_memories": { assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array"); result = await deleteMemories(a.ids); break; }
