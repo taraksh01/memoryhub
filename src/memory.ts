@@ -190,8 +190,8 @@ export async function searchMemories(query: string, limit: number = 10, project?
   const vector = await embed(query);
   const filter = project ? { must: [{ key: "project", match: { value: project } }] } : undefined;
   const capped = Math.min(Math.max(1, limit), MAX_SEARCH_LIMIT);
-  const r = await qdrant().search(getConfig("COLLECTION"), { vector, limit: capped, with_payload: true, filter });
-  return JSON.stringify(r.map(p => ({ id: p.id, text: String(p.payload?.text ?? ""), score: p.score })), null, 2);
+  const r = await qdrant().query(getConfig("COLLECTION"), { query: vector, limit: capped, with_payload: true, filter });
+  return JSON.stringify(r.points.map(p => ({ id: p.id, text: String(p.payload?.text ?? ""), score: p.score })), null, 2);
 }
 
 export async function listMemories(limit: number = 100, offset?: string, project?: string) {
