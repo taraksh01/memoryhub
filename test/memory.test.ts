@@ -1,0 +1,148 @@
+import { test, mock } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const ENV_KEYS = [
+  "MEMORYHUB_DIR", "MEMORYHUB_CONFIG", "QDRANT_URL", "MEMORYHUB_COLLECTION",
+  "MEMORYHUB_VECTOR_SIZE", "MEMORYHUB_RETRY_DELAY_MS", "LLM_MODEL", "LLM_BASE",
+  "LLM_BASE_URL", "LLM_KEY", "LLM_API_KEY", "EMBED_MODEL", "EMBED_BASE",
+  "EMBED_BASE_URL", "EMBED_KEY", "EMBED_API_KEY",
+];
+
+for (const k of ENV_KEYS) delete process.env[k];
+process.env.MEMORYHUB_DIR = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+process.env.MEMORYHUB_RETRY_DELAY_MS = "1";
+
+type MemoryModule = typeof import("../src/memory.ts");
+const mem = (await import("../src/memory.ts")) as MemoryModule;
+
+function chatCompletion(content: string): Response {
+  return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function httpError(status: number): Response {
+  return new Response(`{"error":"boom"}`, { status });
+}
+
+function statusError(status: number): Error {
+  const e = new Error(`HTTP ${status}`) as Error & { status: number };
+  e.status = status;
+  return e;
+}
+
+test("withRetry resolves on first attempt", async () => {
+  let calls = 0;
+  const r = await mem.withRetry(async () => { calls++; return "ok"; });
+  assert.equal(r, "ok");
+  assert.equal(calls, 1);
+});
+
+test("withRetry retries on 429 then succeeds", async () => {
+  let calls = 0;
+  const r = await mem.withRetry(async () => {
+    calls++;
+    if (calls === 1) throw statusError(429);
+    return "ok";
+  });
+  assert.equal(r, "ok");
+  assert.equal(calls, 2);
+});
+
+test("withRetry does not retry 4xx errors below 429", async () => {
+  let calls = 0;
+  await assert.rejects(
+    mem.withRetry(async () => { calls++; throw statusError(400); }),
+    /HTTP 400/
+  );
+  assert.equal(calls, 1);
+});
+
+test("withRetry gives up after 3 attempts on 500", async () => {
+  let calls = 0;
+  await assert.rejects(
+    mem.withRetry(async () => { calls++; throw statusError(500); }),
+    /HTTP 500/
+  );
+  assert.equal(calls, 3);
+});
+
+test("extractMemories parses valid JSON array", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    chatCompletion(JSON.stringify(["remember one", "remember two"]))
+  );
+  const r = await mem.extractMemories("some text");
+  assert.deepEqual(r, ["remember one", "remember two"]);
+});
+
+test("extractMemories strips markdown code fences", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    chatCompletion("```json\n[\"only fact\"]\n```")
+  );
+  const r = await mem.extractMemories("some text");
+  assert.deepEqual(r, ["only fact"]);
+});
+
+test("extractMemories retries on LLM error and falls back to raw text", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return httpError(500);
+  });
+  const r = await mem.extractMemories("raw fallback text");
+  assert.deepEqual(r, ["raw fallback text"]);
+  assert.equal(calls, 6);
+});
+
+test("extractMemories falls back to raw text on invalid JSON", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => { calls++; return chatCompletion("not json at all"); });
+  const r = await mem.extractMemories("raw fallback text");
+  assert.deepEqual(r, ["raw fallback text"]);
+  assert.equal(calls, 2);
+});
+
+test("extractMemories truncates long raw fallback", async (t) => {
+  const longText = "x".repeat(5000);
+  t.mock.method(globalThis, "fetch", async () => chatCompletion("not json at all"));
+  const r = await mem.extractMemories(longText);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].length, 2000 + "... (truncated)".length);
+  assert.ok(r[0].endsWith("... (truncated)"));
+});
+
+test("extractMemories propagates llm errors when raw fallback itself fails", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => { throw new TypeError("fetch failed"); });
+  const r = await mem.extractMemories("some text");
+  assert.deepEqual(r, ["some text"]);
+});
+
+test("llm throws on empty response content", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => chatCompletion(""));
+  await assert.rejects(mem.llm([{ role: "user", content: "hi" }]), /LLM returned empty response/);
+});
+
+test("embed parses embedding response", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), { status: 200 })
+  );
+  const r = await mem.embed("hello");
+  assert.deepEqual(r, [0.1, 0.2, 0.3]);
+});
+
+test("embed throws on empty embedding response", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    new Response(JSON.stringify({ data: [] }), { status: 200 })
+  );
+  await assert.rejects(mem.embed("hello"), /Embed API returned empty response/);
+});
+
+test("fetch timeouts abort the request", async (t) => {
+  mock.method(globalThis, "fetch", () => new Promise((_, reject) => reject(new DOMException("Aborted", "AbortError"))));
+  await assert.rejects(mem.llm([{ role: "user", content: "hi" }]), /AbortError|fetch|LLM/);
+  mock.restoreAll();
+});

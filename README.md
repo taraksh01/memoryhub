@@ -22,10 +22,8 @@ npx @taraksh011/memoryhub
 # Start Qdrant (see docs/install-qdrant.md for help)
 docker run -p 6333:6333 qdrant/qdrant
 
-# Set API credentials (or use config file)
-export LLM_BASE=https://api.openai.com/v1
-export LLM_KEY=sk-...
-export LLM_MODEL=gpt-4o-mini
+# Set API credentials (or run the setup wizard)
+memoryhub configure
 
 # Start memoryhub in stdio mode (for MCP clients)
 memoryhub
@@ -42,11 +40,13 @@ Memory Hub needs three things:
 2. **LLM API** — extracts facts from text (e.g. OpenAI, Anthropic, local Ollama)
 3. **Embedding API** — converts text to vectors (e.g. OpenAI `text-embedding-3-small`, local Ollama)
 
-If your LLM and embedding APIs are the same provider, you can set just the LLM values and reuse them (see config example below).
+**Qdrant and the embedding API are required.** The LLM is optional: if it is unset or fails, the raw text is stored as-is instead of extracted facts. The embedding config is separate from the LLM config — it does not fall back to it (see config example below). `memoryhub configure` walks you through all of them.
 
 ## Configuration
 
-Configuration is checked in this order: **config file** → **environment variable** → **default**.
+Configuration is checked in this order: **environment variable** → **config file** → **default**.
+
+Config files are looked up in this order (first existing wins): `$MEMORYHUB_CONFIG` → `./memoryhub.json` → `~/.memoryhub/config.json`.
 
 ### Config file
 
@@ -72,7 +72,7 @@ Create a `memoryhub.json` in your project root, or `config.json` in the memoryhu
 }
 ```
 
-If your embedder matches your LLM provider, you can omit `embedder` — it falls back to the `llm` settings.
+The `embedder` config is **required** — it does not fall back to the `llm` settings. Embedding models and chat models are usually different endpoints, so both must be configured explicitly.
 
 ### Environment variables
 
@@ -87,10 +87,11 @@ Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `
 | `LLM_MODEL` | — | — | LLM model for extraction |
 | `LLM_BASE_URL` | `LLM_BASE` | — | LLM API base URL |
 | `LLM_API_KEY` | `LLM_KEY` | — | LLM API key |
-| `EMBED_MODEL` | — | — | Embedding model (falls back to LLM_MODEL) |
-| `EMBED_BASE_URL` | `EMBED_BASE` | — | Embedding API base URL (falls back to LLM_BASE) |
-| `EMBED_API_KEY` | `EMBED_KEY` | — | Embedding API key (falls back to LLM_KEY) |
-| `MEMORYHUB_PORT` | — | `9876` | Port for HTTP/SSE mode |
+| `EMBED_MODEL` | — | — | Embedding model (required) |
+| `EMBED_BASE_URL` | `EMBED_BASE` | — | Embedding API base URL (required) |
+| `EMBED_API_KEY` | `EMBED_KEY` | — | Embedding API key (required) |
+| `MEMORYHUB_PORT` | — | `9876` | Port for HTTP serve mode |
+| `MEMORYHUB_RETRY_DELAY_MS` | — | `1000` | Base retry delay for LLM/embed API calls (exponential backoff) |
 
 ## Memory Scopes
 
@@ -130,11 +131,12 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 | Command | Description |
 |---------|-------------|
 | `memoryhub` | Start MCP server in stdio mode |
-| `memoryhub serve` | Start HTTP/SSE server |
+| `memoryhub serve` | Start Streamable HTTP server |
 | `memoryhub start` | Daemon mode (background) |
 | `memoryhub stop` | Stop daemon |
 | `memoryhub status` | Check daemon status |
 | `memoryhub bootstrap` | Auto-start Qdrant if needed, then serve |
+| `memoryhub configure` | Interactive setup wizard (Qdrant, LLM, embedder) with connectivity checks; `--set KEY=VALUE`, `--file`, `--no-verify` for scripted use |
 | `memoryhub install` | Install auto-start service (systemd/launchd/Windows) |
 | `memoryhub uninstall` | Remove auto-start service |
 | `memoryhub --help` | Show help |
@@ -143,7 +145,9 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 ## Transport Modes
 
 - **stdio** (default): Connect MCP clients via stdin/stdout
-- **HTTP/SSE**: `memoryhub serve` starts an HTTP server on port 9876
+- **Streamable HTTP**: `memoryhub serve` starts an HTTP server on port 9876 implementing the MCP Streamable HTTP transport (single `POST /mcp` endpoint, session management via `Mcp-Session-Id` header, `DELETE /mcp` to close a session). Clients must send `Accept: application/json, text/event-stream` on POST requests.
+
+Remote clients connect to `http://<host>:9876/mcp`.
 
 ## Build
 

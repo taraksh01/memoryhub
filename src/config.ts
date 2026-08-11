@@ -11,11 +11,13 @@ export interface MemoryHubConfig {
 }
 
 function env(key: string, fallback: string): string {
-  return process.env[key] || fallback;
+  const v = process.env[key];
+  return v !== undefined ? v : fallback;
 }
 
 function envEither(a: string, b: string, fallback: string): string {
-  return process.env[a] || process.env[b] || fallback;
+  const v = process.env[a] ?? process.env[b];
+  return v !== undefined ? v : fallback;
 }
 
 function num(key: string, fallback: number): number {
@@ -36,7 +38,8 @@ function loadConfig(): MemoryHubConfig {
 
   for (const p of paths) {
     if (existsSync(p)) {
-      try { return JSON.parse(readFileSync(p, "utf-8")); } catch {}
+      try { return JSON.parse(readFileSync(p, "utf-8")); }
+      catch { console.error(`memoryhub: warning: ignoring unparseable config file ${p}`); }
     }
   }
   return {};
@@ -44,20 +47,27 @@ function loadConfig(): MemoryHubConfig {
 
 const cfg = loadConfig();
 
-export const QDRANT_URL = env("QDRANT_URL", cfg.qdrant?.url || "http://localhost:6333");
-export const COLLECTION = env("MEMORYHUB_COLLECTION", cfg.collection || "memories");
-export const VECTOR_SIZE = num("MEMORYHUB_VECTOR_SIZE", cfg.vector_size || 768);
-export const LLM_MODEL = env("LLM_MODEL", cfg.llm?.model || "");
-export const LLM_BASE = envEither("LLM_BASE", "LLM_BASE_URL", cfg.llm?.base_url || "");
-export const LLM_KEY = envEither("LLM_KEY", "LLM_API_KEY", cfg.llm?.api_key || "");
-export const EMBED_MODEL = env("EMBED_MODEL", cfg.embedder?.model || "");
-export const EMBED_BASE = envEither("EMBED_BASE", "EMBED_BASE_URL", cfg.embedder?.base_url || "");
-export const EMBED_KEY = envEither("EMBED_KEY", "EMBED_API_KEY", cfg.embedder?.api_key || "");
+export const QDRANT_URL = env("QDRANT_URL", cfg.qdrant?.url ?? "http://localhost:6333");
+export const COLLECTION = env("MEMORYHUB_COLLECTION", cfg.collection ?? "memories");
+export const VECTOR_SIZE = num("MEMORYHUB_VECTOR_SIZE", cfg.vector_size ?? 768);
+export const LLM_MODEL = env("LLM_MODEL", cfg.llm?.model ?? "");
+export const LLM_BASE = envEither("LLM_BASE", "LLM_BASE_URL", cfg.llm?.base_url ?? "");
+export const LLM_KEY = envEither("LLM_KEY", "LLM_API_KEY", cfg.llm?.api_key ?? "");
+export const EMBED_MODEL = env("EMBED_MODEL", cfg.embedder?.model ?? "");
+export const EMBED_BASE = envEither("EMBED_BASE", "EMBED_BASE_URL", cfg.embedder?.base_url ?? "");
+export const EMBED_KEY = envEither("EMBED_KEY", "EMBED_API_KEY", cfg.embedder?.api_key ?? "");
+export const RETRY_DELAY_MS = num("MEMORYHUB_RETRY_DELAY_MS", 1000);
 
 const overrides: Record<string, string> = {};
 
+const VALID_KEYS = new Set(["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY", "RETRY_DELAY_MS"]);
+
 export function getConfig(key: string): string {
   if (key in overrides) return overrides[key];
+  if (!VALID_KEYS.has(key)) {
+    console.error(`memoryhub: unknown config key "${key}"`);
+    return "";
+  }
   switch (key) {
     case "QDRANT_URL": return QDRANT_URL;
     case "COLLECTION": return COLLECTION;
@@ -65,27 +75,65 @@ export function getConfig(key: string): string {
     case "LLM_MODEL": return LLM_MODEL;
     case "LLM_BASE": return LLM_BASE;
     case "LLM_KEY": return LLM_KEY;
-    case "EMBED_MODEL": return EMBED_MODEL || getConfig("LLM_MODEL");
-    case "EMBED_BASE": return EMBED_BASE || getConfig("LLM_BASE");
-    case "EMBED_KEY": return EMBED_KEY || getConfig("LLM_KEY");
-    default: return "";
+    case "EMBED_MODEL": return EMBED_MODEL;
+    case "EMBED_BASE": return EMBED_BASE;
+    case "EMBED_KEY": return EMBED_KEY;
+    case "RETRY_DELAY_MS": return String(RETRY_DELAY_MS);
+  }
+  return "";
+}
+
+export function validateValue(key: string, value: string): void {
+  const v = value.trim();
+  if (!v) throw new Error(`${key} must not be empty`);
+  switch (key) {
+    case "QDRANT_URL":
+    case "LLM_BASE":
+    case "EMBED_BASE": {
+      let parsed: URL;
+      try { parsed = new URL(v); } catch { throw new Error(`${key} must be a valid http(s) URL, got "${value}"`); }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`${key} must be a valid http(s) URL, got "${value}"`);
+      }
+      break;
+    }
+    case "VECTOR_SIZE": {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`VECTOR_SIZE must be a positive integer, got "${value}"`);
+      break;
+    }
+    case "RETRY_DELAY_MS": {
+      const n = Number(v);
+      if (isNaN(n) || n < 0) throw new Error(`RETRY_DELAY_MS must be a non-negative number, got "${value}"`);
+      break;
+    }
   }
 }
 
 export function setConfig(key: string, value: string): void {
+  if (!VALID_KEYS.has(key)) throw new Error(`Unknown config key "${key}". Valid keys: ${[...VALID_KEYS].join(", ")}`);
+  validateValue(key, value);
   overrides[key] = value;
 }
 
-function mask(val: string): string {
+export function mask(val: string): string {
   if (!val || val.length < 8) return "****";
   return val.slice(0, 4) + "****" + val.slice(-4);
 }
 
+export function requireEmbedConfig(): void {
+  if (!getConfig("EMBED_MODEL") || !getConfig("EMBED_BASE")) {
+    throw new Error(
+      "Embedding config missing. Set EMBED_MODEL + EMBED_BASE (or embedder.model + embedder.base_url in config.json). " +
+      "These are separate from LLM config — embedding models cannot be used for chat and vice versa."
+    );
+  }
+}
+
 export function getAllConfig(): Record<string, string> {
-  const keys = ["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY"];
   const sensitive = new Set(["LLM_KEY", "EMBED_KEY"]);
   const result: Record<string, string> = {};
-  for (const k of keys) {
+  for (const k of VALID_KEYS) {
     const v = getConfig(k);
     result[k] = sensitive.has(k) ? mask(v) : v;
   }

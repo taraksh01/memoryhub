@@ -1,10 +1,9 @@
 {
   "name": "@taraksh011/memoryhub",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "MCP server for persistent memory using Qdrant vector store",
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "bin": {
     "memoryhub": "dist/index.js"
   },
@@ -13,21 +12,22 @@
   ],
   "scripts": {
     "prebuild": "tsc --noEmit",
-    "build": "tsup src/index.ts --clean --dts --sourcemap --format esm --external @modelcontextprotocol/sdk --external @qdrant/js-client-rest",
+    "build": "tsup src/index.ts --clean --sourcemap --format esm --external @modelcontextprotocol/sdk --external @qdrant/js-client-rest",
     "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
     "prepublishOnly": "pnpm build",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "@qdrant/js-client-rest": "^1.9.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@qdrant/js-client-rest": "^1.19.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.2.0",
     "tsup": "^8.5.1",
-    "tsx": "^4.0.0",
-    "typescript": "^5.0.0"
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
   },
   "publishConfig": {
     "access": "public"
