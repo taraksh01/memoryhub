@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ensureCollection, addMemories, searchMemories, listMemories, getMemory, updateMemory, deleteMemories, deleteAllMemories, getStats, healthCheck } from "./memory.js";
+import { runConfigure } from "./configure.js";
 import { MEMORYHUB_DIR, QDRANT_URL, getAllConfig, setConfig } from "./config.js";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -66,6 +67,7 @@ Usage:
   memoryhub stop         Stop daemon
   memoryhub status       Check daemon status
   memoryhub bootstrap    Serve + auto-start Qdrant if not running
+  memoryhub configure    Interactive setup wizard (--set KEY=VALUE for scripted)
   memoryhub install      Install auto-start service for current user
   memoryhub uninstall    Remove auto-start service
   memoryhub --help, -h   Show this help
@@ -242,6 +244,11 @@ if (cmd === "status") {
   if (isProcessAlive(pid)) {
     console.log("memoryhub: running (PID %d)", pid);
   } else { removePid(); console.log("memoryhub: stopped (stale PID)"); }
+  process.exit(0);
+}
+
+if (cmd === "configure") {
+  await runConfigure(process.argv.slice(3));
   process.exit(0);
 }
 

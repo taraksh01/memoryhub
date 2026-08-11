@@ -22,10 +22,8 @@ npx @taraksh011/memoryhub
 # Start Qdrant (see docs/install-qdrant.md for help)
 docker run -p 6333:6333 qdrant/qdrant
 
-# Set API credentials (or use config file)
-export LLM_BASE=https://api.openai.com/v1
-export LLM_KEY=sk-...
-export LLM_MODEL=gpt-4o-mini
+# Set API credentials (or run the setup wizard)
+memoryhub configure
 
 # Start memoryhub in stdio mode (for MCP clients)
 memoryhub
@@ -42,7 +40,7 @@ Memory Hub needs three things:
 2. **LLM API** — extracts facts from text (e.g. OpenAI, Anthropic, local Ollama)
 3. **Embedding API** — converts text to vectors (e.g. OpenAI `text-embedding-3-small`, local Ollama)
 
-If your LLM and embedding APIs are the same provider, you can set just the LLM values and reuse them (see config example below).
+All three are required. The embedding config is separate from the LLM config — it does not fall back to it (see config example below). `memoryhub configure` walks you through all of them.
 
 ## Configuration
 
@@ -136,6 +134,7 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 | `memoryhub stop` | Stop daemon |
 | `memoryhub status` | Check daemon status |
 | `memoryhub bootstrap` | Auto-start Qdrant if needed, then serve |
+| `memoryhub configure` | Interactive setup wizard (Qdrant, LLM, embedder) with connectivity checks |
 | `memoryhub install` | Install auto-start service (systemd/launchd/Windows) |
 | `memoryhub uninstall` | Remove auto-start service |
 | `memoryhub --help` | Show help |
