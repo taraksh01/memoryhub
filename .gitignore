@@ -5,3 +5,6 @@ pnpm-workspace.yaml
 .qdrant-initialized
 storage/
 test-comprehensive.mjs
+.playwright-mcp/
+*.png
+*_snapshot.yml
