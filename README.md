@@ -72,7 +72,7 @@ Create a `memoryhub.json` in your project root, or `config.json` in the memoryhu
 }
 ```
 
-If your embedder matches your LLM provider, you can omit `embedder` — it falls back to the `llm` settings.
+The `embedder` config is **required** — it does not fall back to the `llm` settings. Embedding models and chat models are usually different endpoints, so both must be configured explicitly.
 
 ### Environment variables
 
@@ -87,10 +87,11 @@ Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `
 | `LLM_MODEL` | — | — | LLM model for extraction |
 | `LLM_BASE_URL` | `LLM_BASE` | — | LLM API base URL |
 | `LLM_API_KEY` | `LLM_KEY` | — | LLM API key |
-| `EMBED_MODEL` | — | — | Embedding model (falls back to LLM_MODEL) |
-| `EMBED_BASE_URL` | `EMBED_BASE` | — | Embedding API base URL (falls back to LLM_BASE) |
-| `EMBED_API_KEY` | `EMBED_KEY` | — | Embedding API key (falls back to LLM_KEY) |
+| `EMBED_MODEL` | — | — | Embedding model (required) |
+| `EMBED_BASE_URL` | `EMBED_BASE` | — | Embedding API base URL (required) |
+| `EMBED_API_KEY` | `EMBED_KEY` | — | Embedding API key (required) |
 | `MEMORYHUB_PORT` | — | `9876` | Port for HTTP/SSE mode |
+| `MEMORYHUB_RETRY_DELAY_MS` | — | `1000` | Base retry delay for LLM/embed API calls (exponential backoff) |
 
 ## Memory Scopes
 
