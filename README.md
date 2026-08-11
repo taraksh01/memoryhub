@@ -40,11 +40,13 @@ Memory Hub needs three things:
 2. **LLM API** — extracts facts from text (e.g. OpenAI, Anthropic, local Ollama)
 3. **Embedding API** — converts text to vectors (e.g. OpenAI `text-embedding-3-small`, local Ollama)
 
-All three are required. The embedding config is separate from the LLM config — it does not fall back to it (see config example below). `memoryhub configure` walks you through all of them.
+**Qdrant and the embedding API are required.** The LLM is optional: if it is unset or fails, the raw text is stored as-is instead of extracted facts. The embedding config is separate from the LLM config — it does not fall back to it (see config example below). `memoryhub configure` walks you through all of them.
 
 ## Configuration
 
-Configuration is checked in this order: **config file** → **environment variable** → **default**.
+Configuration is checked in this order: **environment variable** → **config file** → **default**.
+
+Config files are looked up in this order (first existing wins): `$MEMORYHUB_CONFIG` → `./memoryhub.json` → `~/.memoryhub/config.json`.
 
 ### Config file
 
@@ -88,7 +90,7 @@ Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `
 | `EMBED_MODEL` | — | — | Embedding model (required) |
 | `EMBED_BASE_URL` | `EMBED_BASE` | — | Embedding API base URL (required) |
 | `EMBED_API_KEY` | `EMBED_KEY` | — | Embedding API key (required) |
-| `MEMORYHUB_PORT` | — | `9876` | Port for HTTP/SSE mode |
+| `MEMORYHUB_PORT` | — | `9876` | Port for HTTP serve mode |
 | `MEMORYHUB_RETRY_DELAY_MS` | — | `1000` | Base retry delay for LLM/embed API calls (exponential backoff) |
 
 ## Memory Scopes
@@ -129,12 +131,12 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 | Command | Description |
 |---------|-------------|
 | `memoryhub` | Start MCP server in stdio mode |
-| `memoryhub serve` | Start HTTP/SSE server |
+| `memoryhub serve` | Start Streamable HTTP server |
 | `memoryhub start` | Daemon mode (background) |
 | `memoryhub stop` | Stop daemon |
 | `memoryhub status` | Check daemon status |
 | `memoryhub bootstrap` | Auto-start Qdrant if needed, then serve |
-| `memoryhub configure` | Interactive setup wizard (Qdrant, LLM, embedder) with connectivity checks |
+| `memoryhub configure` | Interactive setup wizard (Qdrant, LLM, embedder) with connectivity checks; `--set KEY=VALUE`, `--file`, `--no-verify` for scripted use |
 | `memoryhub install` | Install auto-start service (systemd/launchd/Windows) |
 | `memoryhub uninstall` | Remove auto-start service |
 | `memoryhub --help` | Show help |
