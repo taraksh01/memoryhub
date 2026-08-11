@@ -242,8 +242,8 @@ if (cmd !== undefined && cmd !== "serve" && cmd !== "bootstrap") {
 }
 
 if (cmd === "serve") {
-  try { await ensureCollection(); } catch {
-    console.error("memoryhub: Qdrant unreachable at " + QDRANT_URL + ". Start it or run `memoryhub bootstrap`");
+  try { await ensureCollection(); } catch (err) {
+    console.error("memoryhub: Qdrant check failed: " + (err instanceof Error ? err.message : err));
     process.exit(1);
   }
   const { httpServer, close } = createHttpServer(() => createMcpServer(version));
@@ -261,8 +261,8 @@ if (cmd === "serve") {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 } else {
-  try { await ensureCollection(); } catch {
-    console.error("memoryhub: Qdrant unreachable at " + QDRANT_URL + ". Start it or run `memoryhub bootstrap`");
+  try { await ensureCollection(); } catch (err) {
+    console.error("memoryhub: Qdrant check failed: " + (err instanceof Error ? err.message : err));
     process.exit(1);
   }
   const mcpServer = createMcpServer(version);
