@@ -118,8 +118,8 @@ test("writeConfigFile creates missing parent directories", () => {
 test("buildConfig maps values to config shape and validates vector size", () => {
   const c = cfg.buildConfig({ QDRANT_URL: "http://x:6333", VECTOR_SIZE: "512", LLM_MODEL: "m", LLM_KEY: "k" });
   assert.deepEqual(c, { qdrant: { url: "http://x:6333" }, vector_size: 512, llm: { model: "m", api_key: "k" } });
-  assert.throws(() => cfg.buildConfig({ VECTOR_SIZE: "abc" }), /VECTOR_SIZE must be a positive number/);
-  assert.throws(() => cfg.buildConfig({ VECTOR_SIZE: "-5" }), /VECTOR_SIZE must be a positive number/);
+  assert.throws(() => cfg.buildConfig({ VECTOR_SIZE: "abc" }), /VECTOR_SIZE must be a positive integer/);
+  assert.throws(() => cfg.buildConfig({ VECTOR_SIZE: "-5" }), /VECTOR_SIZE must be a positive integer/);
 });
 
 test("verifySettings reports all checks passing", async (t) => {

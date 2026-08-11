@@ -87,6 +87,29 @@ test("setConfig rejects unknown keys", async () => {
   assert.throws(() => c.setConfig("LLM_MODLE", "gpt-4"), /Unknown config key "LLM_MODLE"/);
 });
 
+test("setConfig rejects empty values", async () => {
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")) });
+  assert.throws(() => c.setConfig("QDRANT_URL", ""), /QDRANT_URL must not be empty/);
+  assert.throws(() => c.setConfig("LLM_MODEL", "   "), /LLM_MODEL must not be empty/);
+});
+
+test("setConfig rejects malformed URLs", async () => {
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")) });
+  assert.throws(() => c.setConfig("QDRANT_URL", "not-a-url"), /QDRANT_URL must be a valid http\(s\) URL/);
+  assert.throws(() => c.setConfig("LLM_BASE", "ftp://x:1"), /LLM_BASE must be a valid http\(s\) URL/);
+  assert.doesNotThrow(() => c.setConfig("EMBED_BASE", "http://localhost:11434/v1"));
+});
+
+test("setConfig validates numeric keys", async () => {
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")) });
+  assert.throws(() => c.setConfig("VECTOR_SIZE", "abc"), /VECTOR_SIZE must be a positive integer/);
+  assert.throws(() => c.setConfig("VECTOR_SIZE", "512.5"), /VECTOR_SIZE must be a positive integer/);
+  assert.throws(() => c.setConfig("VECTOR_SIZE", "-5"), /VECTOR_SIZE must be a positive integer/);
+  assert.doesNotThrow(() => c.setConfig("VECTOR_SIZE", "3072"));
+  assert.throws(() => c.setConfig("RETRY_DELAY_MS", "-1"), /RETRY_DELAY_MS must be a non-negative number/);
+  assert.doesNotThrow(() => c.setConfig("RETRY_DELAY_MS", "0"));
+});
+
 test("getConfig returns empty string for unknown keys", async () => {
   const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")) });
   assert.equal(c.getConfig("BOGUS"), "");

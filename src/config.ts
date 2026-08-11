@@ -82,12 +82,40 @@ export function getConfig(key: string): string {
   return "";
 }
 
+export function validateValue(key: string, value: string): void {
+  const v = value.trim();
+  if (!v) throw new Error(`${key} must not be empty`);
+  switch (key) {
+    case "QDRANT_URL":
+    case "LLM_BASE":
+    case "EMBED_BASE": {
+      let parsed: URL;
+      try { parsed = new URL(v); } catch { throw new Error(`${key} must be a valid http(s) URL, got "${value}"`); }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`${key} must be a valid http(s) URL, got "${value}"`);
+      }
+      break;
+    }
+    case "VECTOR_SIZE": {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`VECTOR_SIZE must be a positive integer, got "${value}"`);
+      break;
+    }
+    case "RETRY_DELAY_MS": {
+      const n = Number(v);
+      if (isNaN(n) || n < 0) throw new Error(`RETRY_DELAY_MS must be a non-negative number, got "${value}"`);
+      break;
+    }
+  }
+}
+
 export function setConfig(key: string, value: string): void {
   if (!VALID_KEYS.has(key)) throw new Error(`Unknown config key "${key}". Valid keys: ${[...VALID_KEYS].join(", ")}`);
+  validateValue(key, value);
   overrides[key] = value;
 }
 
-function mask(val: string): string {
+export function mask(val: string): string {
   if (!val || val.length < 8) return "****";
   return val.slice(0, 4) + "****" + val.slice(-4);
 }

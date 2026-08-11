@@ -143,7 +143,13 @@ export async function ensureCollection() {
     });
   } else {
     const info = await qdrant().getCollection(colName);
-    const actual = info.config?.params?.vectors?.size;
+    const vectors = info.config?.params?.vectors;
+    let actual: number | undefined;
+    if (typeof vectors === "number") actual = vectors;
+    else if (vectors && typeof vectors === "object" && "size" in vectors) {
+      const s = (vectors as { size?: unknown }).size;
+      if (typeof s === "number") actual = s;
+    }
     if (actual && actual !== cfgSize) {
       throw new Error(
         `Collection "${colName}" has vector size ${actual}, but config specifies ${cfgSize}. ` +
@@ -234,6 +240,32 @@ export async function deleteAllMemories(project?: string) {
 export async function getStats() {
   const r = await qdrant().getCollection(getConfig("COLLECTION"));
   return JSON.stringify({ vectors_count: r.points_count ?? 0, collection: getConfig("COLLECTION") }, null, 2);
+}
+
+export async function verifyCollection(): Promise<{ exists: boolean; size?: number; configured: number; ok: boolean; message: string }> {
+  const colName = getConfig("COLLECTION");
+  const cfgSize = Number(getConfig("VECTOR_SIZE")) || 768;
+  try {
+    const cols = await qdrant().getCollections();
+    const existing = cols.collections.find((c) => c.name === colName);
+    if (!existing) {
+      return { exists: false, configured: cfgSize, ok: true, message: `collection "${colName}" will be created on first start` };
+    }
+    const info = await qdrant().getCollection(colName);
+    const vectors = info.config?.params?.vectors;
+    let actual: number | undefined;
+    if (typeof vectors === "number") actual = vectors;
+    else if (vectors && typeof vectors === "object" && "size" in vectors) {
+      const s = (vectors as { size?: unknown }).size;
+      if (typeof s === "number") actual = s;
+    }
+    if (actual && actual !== cfgSize) {
+      return { exists: true, size: actual, configured: cfgSize, ok: false, message: `collection "${colName}" has vector size ${actual}, but config specifies ${cfgSize}` };
+    }
+    return { exists: true, size: actual, configured: cfgSize, ok: true, message: `collection "${colName}" ready (vector size ${actual})` };
+  } catch (e) {
+    return { exists: false, configured: cfgSize, ok: false, message: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export async function healthCheck(): Promise<string> {

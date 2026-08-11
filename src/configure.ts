@@ -1,8 +1,8 @@
 import { createInterface } from "node:readline";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { MEMORYHUB_DIR, getConfig, requireEmbedConfig, setConfig, type MemoryHubConfig } from "./config.js";
-import { embed, healthCheck, llm } from "./memory.js";
+import { MEMORYHUB_DIR, getConfig, mask, requireEmbedConfig, setConfig, validateValue, type MemoryHubConfig } from "./config.js";
+import { embed, healthCheck, llm, verifyCollection } from "./memory.js";
 
 export interface ConfigureOptions {
   sets: Record<string, string>;
@@ -94,6 +94,7 @@ export function configFromFile(path: string): Record<string, string> {
 }
 
 export function buildConfig(values: Record<string, string>): MemoryHubConfig {
+  for (const [key, value] of Object.entries(values)) validateValue(key, value);
   const cfg: MemoryHubConfig = {};
   if (values.QDRANT_URL) cfg.qdrant = { url: values.QDRANT_URL };
   if (values.COLLECTION) cfg.collection = values.COLLECTION;
@@ -162,11 +163,17 @@ export async function verifySettings(): Promise<{ name: string; ok: boolean; mes
     results.push({ name: "Embedding API", ok: false, message: e instanceof Error ? e.message : String(e) });
   }
   try {
-    const out = await llm([{ role: "user", content: "Reply with exactly: OK" }]);
-    results.push({ name: "LLM API", ok: out.length > 0, message: out.length > 0 ? `ok: ${out.trim().slice(0, 60)}` : "empty response" });
+    if (!getConfig("LLM_MODEL") || !getConfig("LLM_BASE")) {
+      results.push({ name: "LLM API", ok: true, message: "not configured — skipped (raw text will be stored)" });
+    } else {
+      const out = await llm([{ role: "user", content: "Reply with exactly: OK" }]);
+      results.push({ name: "LLM API", ok: out.length > 0, message: out.length > 0 ? `ok: ${out.trim().slice(0, 60)}` : "empty response" });
+    }
   } catch (e) {
     results.push({ name: "LLM API", ok: false, message: e instanceof Error ? e.message : String(e) });
   }
+  const col = await verifyCollection();
+  results.push({ name: "Collection", ok: col.ok, message: col.message });
   return results;
 }
 
@@ -224,8 +231,10 @@ async function runWizard(values: Record<string, string>, p: Promptable): Promise
   if (llmModel) values.LLM_MODEL = llmModel;
   const llmBase = await ask("LLM base URL", "LLM_BASE");
   if (llmBase) values.LLM_BASE = llmBase;
-  const llmKey = await ask("LLM API key", "LLM_KEY");
-  if (llmKey) values.LLM_KEY = llmKey;
+  const currentKey = getConfig("LLM_KEY");
+  const keyHint = currentKey ? ` (current ${mask(currentKey)})` : "";
+  const llmKey = await p.secret(`LLM API key (hidden${keyHint})`);
+  if (llmKey.trim()) values.LLM_KEY = llmKey.trim();
   const embedModel = await ask("Embedding model", "EMBED_MODEL");
   if (embedModel) values.EMBED_MODEL = embedModel;
   const embedBase = await ask("Embedding base URL", "EMBED_BASE");
@@ -233,6 +242,15 @@ async function runWizard(values: Record<string, string>, p: Promptable): Promise
   const embedKey = await p.secret("Embedding API key (hidden)");
   if (embedKey.trim()) values.EMBED_KEY = embedKey.trim();
   console.log("");
+}
+
+function buildOrExit(values: Record<string, string>): MemoryHubConfig {
+  try {
+    return buildConfig(values);
+  } catch (e) {
+    console.error(`memoryhub: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
 }
 
 export async function runConfigure(argv: string[]): Promise<void> {
@@ -286,17 +304,21 @@ export async function runConfigure(argv: string[]): Promise<void> {
       }
     }
     const globalPath = join(MEMORYHUB_DIR, "config.json");
-    writeConfigFile(globalPath, buildConfig(values));
+    writeConfigFile(globalPath, buildOrExit(values));
     console.log("✓ Saved to " + globalPath);
     if (await p.yesNo("Also write memoryhub.json in the current directory?", false)) {
       const projectPath = join(process.cwd(), "memoryhub.json");
-      writeConfigFile(projectPath, buildConfig(values));
+      writeConfigFile(projectPath, buildOrExit(values));
       console.log("✓ Saved to " + projectPath);
     }
   } else {
     if (!flags.noVerify) {
       const results = await verifySettings();
       for (const r of results) console.log(`  ${r.ok ? "✓" : "✗"} ${r.name}: ${r.message}`);
+      if (results.some((r) => !r.ok)) {
+        console.error("memoryhub: verification failed — nothing saved");
+        process.exit(1);
+      }
     }
     const globalPath = join(MEMORYHUB_DIR, "config.json");
     writeConfigFile(globalPath, buildConfig(values));
