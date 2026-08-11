@@ -157,6 +157,41 @@ test("tools/call returns structured error for invalid input", async () => {
   assert.equal(text.code, "VALIDATION_ERROR");
 });
 
+test("tools/call rejects empty-string project on all project-aware tools", async () => {
+  const { sessionId } = await initialize();
+  const calls = [
+    { name: "add_memories", arguments: { text: "x", project: "" } },
+    { name: "search_memory", arguments: { query: "x", project: "" } },
+    { name: "list_memories", arguments: { project: "" } },
+    { name: "delete_all_memories", arguments: { project: "" } },
+  ];
+  for (let i = 0; i < calls.length; i++) {
+    const { message } = await mcpPost(sessionId, JSON.stringify({
+      jsonrpc: "2.0",
+      id: 30 + i,
+      method: "tools/call",
+      params: { name: calls[i].name, arguments: calls[i].arguments },
+    }));
+    assert.equal(message.result.isError, true, `${calls[i].name} should fail`);
+    const text = JSON.parse(message.result.content[0].text);
+    assert.equal(text.code, "VALIDATION_ERROR", `${calls[i].name} code`);
+    assert.match(text.error, /project must be a non-empty string/, `${calls[i].name} message`);
+  }
+});
+
+test("update_config masks secret values in the response", async () => {
+  const { sessionId } = await initialize();
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 31,
+    method: "tools/call",
+    params: { name: "update_config", arguments: { key: "LLM_KEY", value: "sk-secret-value-1234" } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.updated, "LLM_KEY");
+  assert.equal(text.value, "sk-s****1234");
+});
+
 test("DELETE /mcp closes the session", async () => {
   const { sessionId } = await initialize();
   const del = await fetch(`${base}/mcp`, {

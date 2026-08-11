@@ -1,7 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { addMemories, searchMemories, listMemories, getMemory, updateMemory, deleteMemories, deleteAllMemories, getStats, healthCheck } from "./memory.js";
-import { getAllConfig, setConfig } from "./config.js";
+import { getAllConfig, mask, setConfig } from "./config.js";
 
 interface ToolArgs {
   text?: string;
@@ -46,21 +46,21 @@ export function createMcpServer(version: string): Server {
       switch (name) {
         case "add_memories": {
           assert(typeof a.text === "string" && a.text, "text is required (string)");
-          if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
+          if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
           result = await addMemories(a.text, a.project);
           break;
         }
         case "search_memory": {
           assert(typeof a.query === "string" && a.query, "query is required (string)");
           if (a.limit !== undefined) assert(typeof a.limit === "number" && a.limit > 0, "limit must be a positive number");
-          if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
+          if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
           result = await searchMemories(a.query, a.limit ?? 10, a.project);
           break;
         }
         case "list_memories": {
           if (a.limit !== undefined) assert(typeof a.limit === "number" && a.limit > 0, "limit must be a positive number");
           if (a.offset !== undefined) assert(typeof a.offset === "string", "offset must be a string");
-          if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
+          if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
           result = await listMemories(a.limit ?? 100, a.offset, a.project);
           break;
         }
@@ -78,7 +78,7 @@ export function createMcpServer(version: string): Server {
           break;
         }
         case "delete_all_memories": {
-          if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
+          if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
           result = await deleteAllMemories(a.project);
           break;
         }
@@ -88,7 +88,8 @@ export function createMcpServer(version: string): Server {
           assert(typeof a.key === "string" && a.key, "key is required (string)");
           assert(typeof a.value === "string", "value is required (string)");
           setConfig(a.key, a.value);
-          result = JSON.stringify({ updated: a.key, value: a.value });
+          const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" ? mask(a.value) : a.value;
+          result = JSON.stringify({ updated: a.key, value });
           break;
         }
         case "health_check": { result = await healthCheck(); break; }

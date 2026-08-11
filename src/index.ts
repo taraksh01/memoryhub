@@ -45,7 +45,7 @@ function showHelp() {
 
 Usage:
   memoryhub              Start MCP server in stdio mode
-  memoryhub serve        Start HTTP/SSE server
+  memoryhub serve        Start Streamable HTTP server
   memoryhub start        Daemon mode (background)
   memoryhub stop         Stop daemon
   memoryhub status       Check daemon status
@@ -71,9 +71,13 @@ function qdrantHealthUrl() {
   return QDRANT_URL.replace(/\/$/, '') + '/healthz';
 }
 
+function qdrantProbe(): Promise<Response> {
+  return fetch(qdrantHealthUrl(), { signal: AbortSignal.timeout(3000) });
+}
+
 async function ensureQdrant(): Promise<void> {
   try {
-    const res = await fetch(qdrantHealthUrl());
+    const res = await qdrantProbe();
     if (res.ok) return;
   } catch {}
   try {
@@ -83,7 +87,7 @@ async function ensureQdrant(): Promise<void> {
   } catch {}
   for (let i = 0; i < 15; i++) {
     await new Promise(r => setTimeout(r, 1000));
-    try { if ((await fetch(qdrantHealthUrl())).ok) return; } catch {}
+    try { if ((await qdrantProbe()).ok) return; } catch {}
   }
   throw new Error("Qdrant failed to start – start it manually and retry");
 }

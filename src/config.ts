@@ -38,7 +38,8 @@ function loadConfig(): MemoryHubConfig {
 
   for (const p of paths) {
     if (existsSync(p)) {
-      try { return JSON.parse(readFileSync(p, "utf-8")); } catch {}
+      try { return JSON.parse(readFileSync(p, "utf-8")); }
+      catch { console.error(`memoryhub: warning: ignoring unparseable config file ${p}`); }
     }
   }
   return {};
