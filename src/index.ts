@@ -68,7 +68,7 @@ if (cmd === "--help" || cmd === "-h") { showHelp(); process.exit(0); }
 if (cmd === "--version" || cmd === "-v") { console.log(version); process.exit(0); }
 
 function qdrantHealthUrl() {
-  return QDRANT_URL.replace(/\/$/, '') + '/health';
+  return QDRANT_URL.replace(/\/$/, '') + '/healthz';
 }
 
 async function ensureQdrant(): Promise<void> {
