@@ -77,7 +77,11 @@ export function createMcpServer(version: string): Server {
           result = await deleteMemories(a.ids);
           break;
         }
-        case "delete_all_memories": { result = await deleteAllMemories(a.project); break; }
+        case "delete_all_memories": {
+          if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
+          result = await deleteAllMemories(a.project);
+          break;
+        }
         case "memory_stats": { result = await getStats(); break; }
         case "get_config": { result = JSON.stringify(getAllConfig(), null, 2); break; }
         case "update_config": {
