@@ -43,6 +43,17 @@ function removePid() {
   if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
 }
 
+function isProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); } catch { return false; }
+  if (process.platform === "linux") {
+    try {
+      const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf-8");
+      if (!cmdline.includes("memoryhub") && !cmdline.includes("dist/index.js")) return false;
+    } catch { return false; }
+  }
+  return true;
+}
+
 let cmd = process.argv[2];
 
 function showHelp() {
@@ -112,7 +123,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${process.execPath} ${scriptPath} bootstrap
+ExecStart="${process.execPath}" "${scriptPath}" bootstrap
 Restart=on-failure
 
 [Install]
@@ -207,13 +218,12 @@ if (cmd === "start") {
 if (cmd === "stop") {
   const pid = readPid();
   if (!pid) { console.log("memoryhub not running"); process.exit(0); }
-  const isAlive = (p: number) => { try { process.kill(p, 0); return true; } catch { return false; } };
-  if (!isAlive(pid)) { removePid(); console.log("memoryhub not running"); process.exit(0); }
+  if (!isProcessAlive(pid)) { removePid(); console.log("memoryhub not running"); process.exit(0); }
   try {
     process.kill(pid, "SIGTERM");
     for (let i = 0; i < 25; i++) {
       await new Promise(r => setTimeout(r, 200));
-      if (!isAlive(pid)) { removePid(); console.log("memoryhub stopped"); process.exit(0); }
+      if (!isProcessAlive(pid)) { removePid(); console.log("memoryhub stopped"); process.exit(0); }
     }
     try { process.kill(pid, "SIGKILL"); } catch { /* not available on Windows */ }
     await new Promise(r => setTimeout(r, 500));
@@ -229,10 +239,9 @@ if (cmd === "stop") {
 if (cmd === "status") {
   const pid = readPid();
   if (!pid) { console.log("memoryhub: stopped"); process.exit(0); }
-  try {
-    process.kill(pid, 0);
+  if (isProcessAlive(pid)) {
     console.log("memoryhub: running (PID %d)", pid);
-  } catch { removePid(); console.log("memoryhub: stopped (stale PID)"); }
+  } else { removePid(); console.log("memoryhub: stopped (stale PID)"); }
   process.exit(0);
 }
 
@@ -349,8 +358,21 @@ if (cmd === "serve") {
   writeFileSync(PID_FILE, String(process.pid));
   const port = Number(process.env.MEMORYHUB_PORT) || 9876;
   httpServer.listen(port, () => console.log("memoryhub serving on http://localhost:%d", port));
-  process.on("SIGTERM", () => { removePid(); process.exit(0); });
-  process.on("SIGINT", () => { removePid(); process.exit(0); });
+
+  const shutdown = async () => {
+    console.log("\nmemoryhub: shutting down...");
+    removePid();
+    for (const t of transports.values()) {
+      try { await t.close(); } catch {}
+    }
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => { httpServer.closeAllConnections(); resolve(); }, 5000);
+      httpServer.close(() => { clearTimeout(timeout); resolve(); });
+    });
+    process.exit(0);
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 } else {
   try { await ensureCollection(); } catch {
     console.error("memoryhub: Qdrant unreachable at " + QDRANT_URL + ". Start it or run `memoryhub bootstrap`");
