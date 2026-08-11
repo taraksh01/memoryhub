@@ -46,20 +46,27 @@ function loadConfig(): MemoryHubConfig {
 
 const cfg = loadConfig();
 
-export const QDRANT_URL = env("QDRANT_URL", cfg.qdrant?.url || "http://localhost:6333");
-export const COLLECTION = env("MEMORYHUB_COLLECTION", cfg.collection || "memories");
-export const VECTOR_SIZE = num("MEMORYHUB_VECTOR_SIZE", cfg.vector_size || 768);
-export const LLM_MODEL = env("LLM_MODEL", cfg.llm?.model || "");
-export const LLM_BASE = envEither("LLM_BASE", "LLM_BASE_URL", cfg.llm?.base_url || "");
-export const LLM_KEY = envEither("LLM_KEY", "LLM_API_KEY", cfg.llm?.api_key || "");
-export const EMBED_MODEL = env("EMBED_MODEL", cfg.embedder?.model || "");
-export const EMBED_BASE = envEither("EMBED_BASE", "EMBED_BASE_URL", cfg.embedder?.base_url || "");
-export const EMBED_KEY = envEither("EMBED_KEY", "EMBED_API_KEY", cfg.embedder?.api_key || "");
+export const QDRANT_URL = env("QDRANT_URL", cfg.qdrant?.url ?? "http://localhost:6333");
+export const COLLECTION = env("MEMORYHUB_COLLECTION", cfg.collection ?? "memories");
+export const VECTOR_SIZE = num("MEMORYHUB_VECTOR_SIZE", cfg.vector_size ?? 768);
+export const LLM_MODEL = env("LLM_MODEL", cfg.llm?.model ?? "");
+export const LLM_BASE = envEither("LLM_BASE", "LLM_BASE_URL", cfg.llm?.base_url ?? "");
+export const LLM_KEY = envEither("LLM_KEY", "LLM_API_KEY", cfg.llm?.api_key ?? "");
+export const EMBED_MODEL = env("EMBED_MODEL", cfg.embedder?.model ?? "");
+export const EMBED_BASE = envEither("EMBED_BASE", "EMBED_BASE_URL", cfg.embedder?.base_url ?? "");
+export const EMBED_KEY = envEither("EMBED_KEY", "EMBED_API_KEY", cfg.embedder?.api_key ?? "");
+export const RETRY_DELAY_MS = num("MEMORYHUB_RETRY_DELAY_MS", 1000);
 
 const overrides: Record<string, string> = {};
 
+const VALID_KEYS = new Set(["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY", "RETRY_DELAY_MS"]);
+
 export function getConfig(key: string): string {
   if (key in overrides) return overrides[key];
+  if (!VALID_KEYS.has(key)) {
+    console.error(`memoryhub: unknown config key "${key}"`);
+    return "";
+  }
   switch (key) {
     case "QDRANT_URL": return QDRANT_URL;
     case "COLLECTION": return COLLECTION;
@@ -70,11 +77,13 @@ export function getConfig(key: string): string {
     case "EMBED_MODEL": return EMBED_MODEL;
     case "EMBED_BASE": return EMBED_BASE;
     case "EMBED_KEY": return EMBED_KEY;
-    default: return "";
+    case "RETRY_DELAY_MS": return String(RETRY_DELAY_MS);
   }
+  return "";
 }
 
 export function setConfig(key: string, value: string): void {
+  if (!VALID_KEYS.has(key)) throw new Error(`Unknown config key "${key}". Valid keys: ${[...VALID_KEYS].join(", ")}`);
   overrides[key] = value;
 }
 
@@ -93,10 +102,9 @@ export function requireEmbedConfig(): void {
 }
 
 export function getAllConfig(): Record<string, string> {
-  const keys = ["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY"];
   const sensitive = new Set(["LLM_KEY", "EMBED_KEY"]);
   const result: Record<string, string> = {};
-  for (const k of keys) {
+  for (const k of VALID_KEYS) {
     const v = getConfig(k);
     result[k] = sensitive.has(k) ? mask(v) : v;
   }
