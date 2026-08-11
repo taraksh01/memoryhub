@@ -190,6 +190,15 @@ if (cmd === "start") {
   const { fork } = await import("node:child_process");
   const child = fork(process.argv[1], ["serve"], { detached: true, stdio: "ignore" });
   child.unref();
+  let started = false;
+  child.on("error", () => { if (!started) { console.error("memoryhub: failed to start"); process.exit(1); } });
+  child.on("exit", (code) => { if (!started) { console.error(`memoryhub: exited immediately (code ${code})`); process.exit(1); } });
+  await new Promise(r => setTimeout(r, 500));
+  started = true;
+  if (!child.pid || !process.kill(child.pid, 0)) {
+    console.error("memoryhub: failed to start");
+    process.exit(1);
+  }
   writeFileSync(PID_FILE, String(child.pid));
   console.log("memoryhub started (PID: %d)", child.pid);
   process.exit(0);
@@ -198,13 +207,16 @@ if (cmd === "start") {
 if (cmd === "stop") {
   const pid = readPid();
   if (!pid) { console.log("memoryhub not running"); process.exit(0); }
+  const isAlive = (p: number) => { try { process.kill(p, 0); return true; } catch { return false; } };
+  if (!isAlive(pid)) { removePid(); console.log("memoryhub not running"); process.exit(0); }
   try {
     process.kill(pid, "SIGTERM");
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 25; i++) {
       await new Promise(r => setTimeout(r, 200));
-      if (!readPid()) { console.log("memoryhub stopped"); process.exit(0); }
+      if (!isAlive(pid)) { removePid(); console.log("memoryhub stopped"); process.exit(0); }
     }
-    try { process.kill(pid, "SIGKILL"); } catch { /* SIGKILL not available on Windows */ }
+    try { process.kill(pid, "SIGKILL"); } catch { /* not available on Windows */ }
+    await new Promise(r => setTimeout(r, 500));
     removePid();
     console.log("memoryhub force killed");
   } catch {
@@ -254,23 +266,59 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     let result: string;
     switch (name) {
-      case "add_memories": { assert(typeof a.text === "string" && a.text, "text is required"); result = await addMemories(a.text, a.project); break; }
-      case "search_memory": { assert(typeof a.query === "string" && a.query, "query is required"); result = await searchMemories(a.query, a.limit ?? 10, a.project); break; }
-      case "list_memories": { result = await listMemories(a.limit ?? 100, a.offset, a.project); break; }
-      case "get_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required"); result = await getMemory(a.memory_id); break; }
-      case "update_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required"); assert(typeof a.text === "string" && a.text, "text is required"); result = await updateMemory(a.memory_id, a.text); break; }
-      case "delete_memories": { assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array"); result = await deleteMemories(a.ids); break; }
+      case "add_memories": {
+        assert(typeof a.text === "string" && a.text, "text is required (string)");
+        if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
+        result = await addMemories(a.text, a.project);
+        break;
+      }
+      case "search_memory": {
+        assert(typeof a.query === "string" && a.query, "query is required (string)");
+        if (a.limit !== undefined) assert(typeof a.limit === "number" && a.limit > 0, "limit must be a positive number");
+        if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
+        result = await searchMemories(a.query, a.limit ?? 10, a.project);
+        break;
+      }
+      case "list_memories": {
+        if (a.limit !== undefined) assert(typeof a.limit === "number" && a.limit > 0, "limit must be a positive number");
+        if (a.offset !== undefined) assert(typeof a.offset === "string", "offset must be a string");
+        if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
+        result = await listMemories(a.limit ?? 100, a.offset, a.project);
+        break;
+      }
+      case "get_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required (string)"); result = await getMemory(a.memory_id); break; }
+      case "update_memory": {
+        assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required (string)");
+        assert(typeof a.text === "string" && a.text, "text is required (string)");
+        result = await updateMemory(a.memory_id, a.text);
+        break;
+      }
+      case "delete_memories": {
+        assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array of strings");
+        assert(a.ids.every((id: unknown) => typeof id === "string"), "each id must be a string");
+        result = await deleteMemories(a.ids);
+        break;
+      }
       case "delete_all_memories": { result = await deleteAllMemories(a.project); break; }
       case "memory_stats": { result = await getStats(); break; }
       case "get_config": { result = JSON.stringify(getAllConfig(), null, 2); break; }
-      case "update_config": { assert(typeof a.key === "string" && a.key, "key is required"); assert(typeof a.value === "string", "value is required"); setConfig(a.key, a.value); result = JSON.stringify({ updated: a.key, value: a.value }); break; }
+      case "update_config": {
+        assert(typeof a.key === "string" && a.key, "key is required (string)");
+        assert(typeof a.value === "string", "value is required (string)");
+        setConfig(a.key, a.value);
+        result = JSON.stringify({ updated: a.key, value: a.value });
+        break;
+      }
       case "health_check": { result = await healthCheck(); break; }
       default: throw new Error(`Unknown tool: ${name}`);
     }
     return { content: [{ type: "text", text: result }] };
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
-    return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
+    const isValidation = message.includes("is required") || message.includes("must be");
+    const isConfig = message.includes("config") || message.includes("Config");
+    const code = isValidation ? "VALIDATION_ERROR" : isConfig ? "CONFIG_ERROR" : "INTERNAL_ERROR";
+    return { content: [{ type: "text", text: JSON.stringify({ error: message, code }) }], isError: true };
   }
 });
 
