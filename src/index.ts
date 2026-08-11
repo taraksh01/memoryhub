@@ -2,14 +2,13 @@
 import { createRequire } from "node:module";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { ensureCollection, addMemories, searchMemories, listMemories, getMemory, updateMemory, deleteMemories, deleteAllMemories, getStats, healthCheck } from "./memory.js";
+import { ensureCollection } from "./memory.js";
+import { createMcpServer } from "./mcp.js";
+import { createHttpServer } from "./http.js";
 import { runConfigure } from "./configure.js";
-import { MEMORYHUB_DIR, QDRANT_URL, getAllConfig, setConfig } from "./config.js";
+import { MEMORYHUB_DIR, QDRANT_URL } from "./config.js";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { spawn, execSync } from "node:child_process";
 import os from "node:os";
 
@@ -17,22 +16,6 @@ const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
 const PID_FILE = join(MEMORYHUB_DIR, "hub.pid");
-
-interface ToolArgs {
-  text?: string;
-  query?: string;
-  limit?: number;
-  offset?: string;
-  memory_id?: string;
-  ids?: string[];
-  key?: string;
-  value?: string;
-  project?: string;
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
-}
 
 function readPid(): number | null {
   if (!existsSync(PID_FILE)) return null;
@@ -258,109 +241,12 @@ if (cmd !== undefined && cmd !== "serve" && cmd !== "bootstrap") {
   process.exit(1);
 }
 
-const mcpServer = new Server({ name: "memoryhub", version }, { capabilities: { tools: {} } });
-
-mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    { name: "add_memories", description: "Store text (LLM extracts facts, embeds, stores).", inputSchema: { type: "object", properties: { text: { type: "string" }, project: { type: "string" } }, required: ["text"] } },
-    { name: "search_memory", description: "Semantic search across stored memories.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, project: { type: "string" } }, required: ["query"] } },
-    { name: "list_memories", description: "List stored memories with pagination.", inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "string" }, project: { type: "string" } } } },
-    { name: "get_memory", description: "Get a single memory by ID.", inputSchema: { type: "object", properties: { memory_id: { type: "string" } }, required: ["memory_id"] } },
-    { name: "update_memory", description: "Update a memory's text (re-embeds).", inputSchema: { type: "object", properties: { memory_id: { type: "string" }, text: { type: "string" } }, required: ["memory_id", "text"] } },
-    { name: "delete_memories", description: "Delete specific memories by IDs.", inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } }, required: ["ids"] } },
-    { name: "delete_all_memories", description: "Delete ALL memories (or filter by project).", inputSchema: { type: "object", properties: { project: { type: "string" } } } },
-    { name: "memory_stats", description: "Get collection statistics.", inputSchema: { type: "object", properties: {} } },
-    { name: "get_config", description: "Show current runtime configuration.", inputSchema: { type: "object", properties: {} } },
-    { name: "update_config", description: "Update a config value at runtime (not persisted).", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } }, required: ["key", "value"] } },
-    { name: "health_check", description: "Check connectivity to Qdrant.", inputSchema: { type: "object", properties: {} } },
-  ],
-}));
-
-mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: args } = req.params;
-  const a = args as ToolArgs;
-  try {
-    let result: string;
-    switch (name) {
-      case "add_memories": {
-        assert(typeof a.text === "string" && a.text, "text is required (string)");
-        if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
-        result = await addMemories(a.text, a.project);
-        break;
-      }
-      case "search_memory": {
-        assert(typeof a.query === "string" && a.query, "query is required (string)");
-        if (a.limit !== undefined) assert(typeof a.limit === "number" && a.limit > 0, "limit must be a positive number");
-        if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
-        result = await searchMemories(a.query, a.limit ?? 10, a.project);
-        break;
-      }
-      case "list_memories": {
-        if (a.limit !== undefined) assert(typeof a.limit === "number" && a.limit > 0, "limit must be a positive number");
-        if (a.offset !== undefined) assert(typeof a.offset === "string", "offset must be a string");
-        if (a.project !== undefined) assert(typeof a.project === "string", "project must be a string");
-        result = await listMemories(a.limit ?? 100, a.offset, a.project);
-        break;
-      }
-      case "get_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required (string)"); result = await getMemory(a.memory_id); break; }
-      case "update_memory": {
-        assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required (string)");
-        assert(typeof a.text === "string" && a.text, "text is required (string)");
-        result = await updateMemory(a.memory_id, a.text);
-        break;
-      }
-      case "delete_memories": {
-        assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array of strings");
-        assert(a.ids.every((id: unknown) => typeof id === "string"), "each id must be a string");
-        result = await deleteMemories(a.ids);
-        break;
-      }
-      case "delete_all_memories": { result = await deleteAllMemories(a.project); break; }
-      case "memory_stats": { result = await getStats(); break; }
-      case "get_config": { result = JSON.stringify(getAllConfig(), null, 2); break; }
-      case "update_config": {
-        assert(typeof a.key === "string" && a.key, "key is required (string)");
-        assert(typeof a.value === "string", "value is required (string)");
-        setConfig(a.key, a.value);
-        result = JSON.stringify({ updated: a.key, value: a.value });
-        break;
-      }
-      case "health_check": { result = await healthCheck(); break; }
-      default: throw new Error(`Unknown tool: ${name}`);
-    }
-    return { content: [{ type: "text", text: result }] };
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    const isValidation = message.includes("is required") || message.includes("must be");
-    const isConfig = message.includes("config") || message.includes("Config");
-    const code = isValidation ? "VALIDATION_ERROR" : isConfig ? "CONFIG_ERROR" : "INTERNAL_ERROR";
-    return { content: [{ type: "text", text: JSON.stringify({ error: message, code }) }], isError: true };
-  }
-});
-
 if (cmd === "serve") {
   try { await ensureCollection(); } catch {
     console.error("memoryhub: Qdrant unreachable at " + QDRANT_URL + ". Start it or run `memoryhub bootstrap`");
     process.exit(1);
   }
-  const transports = new Map<string, SSEServerTransport>();
-
-  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    if (req.method === "GET" && req.url === "/mcp") {
-      const transport = new SSEServerTransport("/mcp/message", res);
-      transports.set(transport.sessionId, transport);
-      mcpServer.connect(transport);
-      req.on("close", () => { transports.delete(transport.sessionId); transport.close(); });
-    } else if (req.method === "POST" && req.url?.startsWith("/mcp/message")) {
-      const url = `http://localhost${req.url}`;
-      const sessionId = new URL(url).searchParams.get("sessionId") || req.url.split("/").pop() || "";
-      const transport = transports.get(sessionId);
-      if (transport) await transport.handlePostMessage(req, res);
-      else { res.writeHead(404).end("Session not found"); }
-    } else {
-      res.writeHead(404).end();
-    }
-  });
+  const { httpServer, close } = createHttpServer(() => createMcpServer(version));
 
   writeFileSync(PID_FILE, String(process.pid));
   const port = Number(process.env.MEMORYHUB_PORT) || 9876;
@@ -369,13 +255,7 @@ if (cmd === "serve") {
   const shutdown = async () => {
     console.log("\nmemoryhub: shutting down...");
     removePid();
-    for (const t of transports.values()) {
-      try { await t.close(); } catch {}
-    }
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => { httpServer.closeAllConnections(); resolve(); }, 5000);
-      httpServer.close(() => { clearTimeout(timeout); resolve(); });
-    });
+    await close();
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);
@@ -385,6 +265,7 @@ if (cmd === "serve") {
     console.error("memoryhub: Qdrant unreachable at " + QDRANT_URL + ". Start it or run `memoryhub bootstrap`");
     process.exit(1);
   }
+  const mcpServer = createMcpServer(version);
   const transport = new StdioServerTransport();
   mcpServer.connect(transport);
 }

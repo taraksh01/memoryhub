@@ -143,7 +143,9 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 ## Transport Modes
 
 - **stdio** (default): Connect MCP clients via stdin/stdout
-- **HTTP/SSE**: `memoryhub serve` starts an HTTP server on port 9876
+- **Streamable HTTP**: `memoryhub serve` starts an HTTP server on port 9876 implementing the MCP Streamable HTTP transport (single `POST /mcp` endpoint, session management via `Mcp-Session-Id` header, `DELETE /mcp` to close a session). Clients must send `Accept: application/json, text/event-stream` on POST requests.
+
+Remote clients connect to `http://<host>:9876/mcp`.
 
 ## Build
 
