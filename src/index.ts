@@ -6,8 +6,8 @@ import { ensureCollection } from "./memory.js";
 import { createMcpServer } from "./mcp.js";
 import { createHttpServer } from "./http.js";
 import { runConfigure } from "./configure.js";
-import { MEMORYHUB_DIR, QDRANT_URL } from "./config.js";
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync } from "node:fs";
+import { MEMORYHUB_DIR, getConfig, onConfigChange } from "./config.js";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, execSync } from "node:child_process";
 import os from "node:os";
@@ -101,12 +101,22 @@ if (cmd === "--help" || cmd === "-h") { showHelp(); process.exit(0); }
 if (cmd === "--version" || cmd === "-v") { console.log(version); process.exit(0); }
 
 function qdrantHealthUrl() {
-  return QDRANT_URL.replace(/\/$/, '') + '/healthz';
+  return getConfig("QDRANT_URL").replace(/\/$/, '') + '/healthz';
 }
 
 function qdrantProbe(): Promise<Response> {
   return fetch(qdrantHealthUrl(), { signal: AbortSignal.timeout(3000) });
 }
+
+onConfigChange(async (changedKeys) => {
+  if (!changedKeys.some((k) => k === "COLLECTION" || k === "VECTOR_SIZE")) return;
+  try {
+    await ensureCollection();
+    console.log("memoryhub: collection verified after config reload");
+  } catch (err) {
+    console.error("memoryhub: collection check failed after config reload: " + (err instanceof Error ? err.message : err));
+  }
+});
 
 async function ensureQdrant(): Promise<void> {
   try {
@@ -231,21 +241,31 @@ if (cmd === "start") {
     console.error(`memoryhub: port already in use by an untracked instance (PID ${portHolder}) — run "memoryhub stop" first`);
     process.exit(1);
   }
-  const child = fork(process.argv[1], ["serve"], { detached: true, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  const logPath = join(MEMORYHUB_DIR, "memoryhub.log");
+  let logFd: number | undefined;
+  try { logFd = openSync(logPath, "a"); } catch {}
+  const child = fork(process.argv[1], ["serve"], { detached: true, stdio: ["ignore", "ignore", logFd ?? "ignore", "ipc"] });
   child.unref();
   let started = false;
-  let stderr = "";
-  child.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
-  child.on("error", () => { if (!started) { console.error(`memoryhub: failed to start${stderr ? `: ${stderr.trim()}` : ""}`); process.exit(1); } });
-  child.on("exit", (code) => { if (!started) { console.error(`memoryhub: failed to start (code ${code})${stderr ? `: ${stderr.trim()}` : ""}`); process.exit(1); } });
+  child.on("error", () => { if (!started) { console.error("memoryhub: failed to start"); process.exit(1); } });
+  child.on("exit", (code) => {
+    if (!started) {
+      let tail = "";
+      try {
+        tail = readFileSync(logPath, "utf-8").trim().split("\n").slice(-10).join("\n");
+      } catch {}
+      console.error(`memoryhub: failed to start (code ${code})${tail ? `:\n${tail}` : ""}`);
+      process.exit(1);
+    }
+  });
   await new Promise(r => setTimeout(r, 500));
   started = true;
   if (!child.pid || !process.kill(child.pid, 0)) {
-    console.error(`memoryhub: failed to start${stderr ? `: ${stderr.trim()}` : ""}`);
+    console.error("memoryhub: failed to start");
     process.exit(1);
   }
   writeFileSync(PID_FILE, String(child.pid));
-  console.log("memoryhub started (PID: %d)", child.pid);
+  console.log(`memoryhub started (PID: %d) — logs: ${logPath}`, child.pid);
   process.exit(0);
 }
 

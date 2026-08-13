@@ -48,6 +48,8 @@ Configuration is checked in this order: **environment variable** → **config fi
 
 Config files are looked up in this order (first existing wins): `$MEMORYHUB_CONFIG` → `./memoryhub.json` → `~/.memoryhub/config.json`.
 
+The config **file is hot-reloaded**: edits are picked up within ~1 second without restarting the server (a 1s watcher re-reads the file and logs `config hot-reloaded (...)`). Environment variables are read once at startup, so they still require a restart. Runtime `update_config` values keep precedence over the file until the process restarts.
+
 ### Config file
 
 Create a `memoryhub.json` in your project root, or `config.json` in the memoryhub directory (`~/.memoryhub/` by default):

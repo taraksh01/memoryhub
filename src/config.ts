@@ -15,52 +15,85 @@ function env(key: string, fallback: string): string {
   return v !== undefined ? v : fallback;
 }
 
-function envEither(a: string, b: string, fallback: string): string {
-  const v = process.env[a] ?? process.env[b];
-  return v !== undefined ? v : fallback;
-}
-
-function num(key: string, fallback: number): number {
-  const v = process.env[key];
-  if (v === undefined) return fallback;
-  const n = Number(v);
-  return isNaN(n) ? fallback : n;
-}
-
 export const MEMORYHUB_DIR = env("MEMORYHUB_DIR", join(homedir(), ".memoryhub"));
 
-function loadConfig(): MemoryHubConfig {
-  const paths = [
+function configPaths(): string[] {
+  return [
     process.env.MEMORYHUB_CONFIG,
     join(process.cwd(), "memoryhub.json"),
     join(MEMORYHUB_DIR, "config.json"),
   ].filter(Boolean) as string[];
-
-  for (const p of paths) {
-    if (existsSync(p)) {
-      try { return JSON.parse(readFileSync(p, "utf-8")); }
-      catch { console.error(`memoryhub: warning: ignoring unparseable config file ${p}`); }
-    }
-  }
-  return {};
 }
 
-const cfg = loadConfig();
+function parseConfigFile(p: string): MemoryHubConfig | null {
+  try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return null; }
+}
 
-export const QDRANT_URL = env("QDRANT_URL", cfg.qdrant?.url ?? "http://localhost:6333");
-export const COLLECTION = env("MEMORYHUB_COLLECTION", cfg.collection ?? "memories");
-export const VECTOR_SIZE = num("MEMORYHUB_VECTOR_SIZE", cfg.vector_size ?? 768);
-export const LLM_MODEL = env("LLM_MODEL", cfg.llm?.model ?? "");
-export const LLM_BASE = envEither("LLM_BASE", "LLM_BASE_URL", cfg.llm?.base_url ?? "");
-export const LLM_KEY = envEither("LLM_KEY", "LLM_API_KEY", cfg.llm?.api_key ?? "");
-export const EMBED_MODEL = env("EMBED_MODEL", cfg.embedder?.model ?? "");
-export const EMBED_BASE = envEither("EMBED_BASE", "EMBED_BASE_URL", cfg.embedder?.base_url ?? "");
-export const EMBED_KEY = envEither("EMBED_KEY", "EMBED_API_KEY", cfg.embedder?.api_key ?? "");
-export const RETRY_DELAY_MS = num("MEMORYHUB_RETRY_DELAY_MS", 1000);
+function loadConfigFile(): { path: string; config: MemoryHubConfig } | null {
+  for (const p of configPaths()) {
+    if (existsSync(p)) {
+      const parsed = parseConfigFile(p);
+      if (parsed !== null) return { path: p, config: parsed };
+      console.error(`memoryhub: warning: ignoring unparseable config file ${p}`);
+    }
+  }
+  return null;
+}
+
+let fileSource: { path: string; config: MemoryHubConfig } | null = loadConfigFile();
+let lastCorruptWarned = false;
 
 const overrides: Record<string, string> = {};
 
 const VALID_KEYS = new Set(["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY", "RETRY_DELAY_MS"]);
+
+const DEFAULTS: Record<string, string> = {
+  QDRANT_URL: "http://localhost:6333",
+  COLLECTION: "memories",
+  VECTOR_SIZE: "768",
+  LLM_MODEL: "",
+  LLM_BASE: "",
+  LLM_KEY: "",
+  EMBED_MODEL: "",
+  EMBED_BASE: "",
+  EMBED_KEY: "",
+  RETRY_DELAY_MS: "1000",
+};
+
+function envValue(key: string): string | undefined {
+  const e = process.env;
+  switch (key) {
+    case "QDRANT_URL": return e.QDRANT_URL;
+    case "COLLECTION": return e.MEMORYHUB_COLLECTION;
+    case "VECTOR_SIZE": { const v = e.MEMORYHUB_VECTOR_SIZE; const n = Number(v); return v !== undefined && !isNaN(n) ? String(n) : undefined; }
+    case "LLM_MODEL": return e.LLM_MODEL;
+    case "LLM_BASE": return e.LLM_BASE ?? e.LLM_BASE_URL;
+    case "LLM_KEY": return e.LLM_KEY ?? e.LLM_API_KEY;
+    case "EMBED_MODEL": return e.EMBED_MODEL;
+    case "EMBED_BASE": return e.EMBED_BASE ?? e.EMBED_BASE_URL;
+    case "EMBED_KEY": return e.EMBED_KEY ?? e.EMBED_API_KEY;
+    case "RETRY_DELAY_MS": { const v = e.MEMORYHUB_RETRY_DELAY_MS; const n = Number(v); return v !== undefined && !isNaN(n) ? String(n) : undefined; }
+  }
+  return undefined;
+}
+
+function fileValue(key: string): string | undefined {
+  const c = fileSource?.config;
+  if (!c) return undefined;
+  switch (key) {
+    case "QDRANT_URL": return c.qdrant?.url;
+    case "COLLECTION": return c.collection;
+    case "VECTOR_SIZE": return typeof c.vector_size === "number" ? String(c.vector_size) : undefined;
+    case "LLM_MODEL": return c.llm?.model;
+    case "LLM_BASE": return c.llm?.base_url;
+    case "LLM_KEY": return c.llm?.api_key;
+    case "EMBED_MODEL": return c.embedder?.model;
+    case "EMBED_BASE": return c.embedder?.base_url;
+    case "EMBED_KEY": return c.embedder?.api_key;
+    case "RETRY_DELAY_MS": return undefined;
+  }
+  return undefined;
+}
 
 export function getConfig(key: string): string {
   if (key in overrides) return overrides[key];
@@ -68,19 +101,7 @@ export function getConfig(key: string): string {
     console.error(`memoryhub: unknown config key "${key}"`);
     return "";
   }
-  switch (key) {
-    case "QDRANT_URL": return QDRANT_URL;
-    case "COLLECTION": return COLLECTION;
-    case "VECTOR_SIZE": return String(VECTOR_SIZE);
-    case "LLM_MODEL": return LLM_MODEL;
-    case "LLM_BASE": return LLM_BASE;
-    case "LLM_KEY": return LLM_KEY;
-    case "EMBED_MODEL": return EMBED_MODEL;
-    case "EMBED_BASE": return EMBED_BASE;
-    case "EMBED_KEY": return EMBED_KEY;
-    case "RETRY_DELAY_MS": return String(RETRY_DELAY_MS);
-  }
-  return "";
+  return envValue(key) ?? fileValue(key) ?? DEFAULTS[key];
 }
 
 export function validateValue(key: string, value: string): void {
@@ -139,3 +160,37 @@ export function getAllConfig(): Record<string, string> {
   }
   return result;
 }
+
+const changeListeners: ((changedKeys: string[]) => void)[] = [];
+
+export function onConfigChange(fn: (changedKeys: string[]) => void): void {
+  changeListeners.push(fn);
+}
+
+export function reloadConfig(): string[] {
+  const before: Record<string, string> = {};
+  for (const k of VALID_KEYS) before[k] = getConfig(k);
+
+  const corruptPath = configPaths().find((p) => existsSync(p) && parseConfigFile(p) === null);
+  if (corruptPath && fileSource?.path === corruptPath) {
+    if (!lastCorruptWarned) {
+      console.error(`memoryhub: warning: config file ${corruptPath} is unparseable — keeping previous values`);
+      lastCorruptWarned = true;
+    }
+  } else {
+    lastCorruptWarned = false;
+    fileSource = loadConfigFile();
+  }
+
+  const changed = [...VALID_KEYS].filter((k) => getConfig(k) !== before[k]);
+  if (changed.length > 0) {
+    console.log(`memoryhub: config hot-reloaded (${changed.join(", ")})`);
+    for (const fn of changeListeners) {
+      try { fn(changed); } catch (e) { console.error(`memoryhub: config change handler failed: ${e instanceof Error ? e.message : String(e)}`); }
+    }
+  }
+  return changed;
+}
+
+const watcher = setInterval(() => reloadConfig(), 1000);
+watcher.unref();
