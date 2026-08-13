@@ -7,7 +7,7 @@ import { createMcpServer } from "./mcp.js";
 import { createHttpServer } from "./http.js";
 import { runConfigure } from "./configure.js";
 import { MEMORYHUB_DIR, QDRANT_URL } from "./config.js";
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, execSync } from "node:child_process";
 import os from "node:os";
@@ -36,6 +36,39 @@ function isProcessAlive(pid: number): boolean {
     } catch { return false; }
   }
   return true;
+}
+
+function findServerProcess(): number | null {
+  if (process.platform !== "linux") return null;
+  try {
+    for (const entry of readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      const pid = Number(entry);
+      if (pid === process.pid) continue;
+      try {
+        const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf-8").replace(/\0/g, " ");
+        if (cmdline.includes("index.js serve") || cmdline.includes("index.js bootstrap")) return pid;
+      } catch {}
+    }
+  } catch {}
+  return null;
+}
+
+function killProcess(pid: number): boolean {
+  try {
+    process.kill(pid, "SIGTERM");
+    for (let i = 0; i < 25; i++) {
+      awaitDelay(200);
+      if (!isProcessAlive(pid)) return true;
+    }
+    try { process.kill(pid, "SIGKILL"); } catch {}
+    awaitDelay(500);
+    return !isProcessAlive(pid);
+  } catch { return false; }
+}
+
+function awaitDelay(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
 }
 
 let cmd = process.argv[2];
@@ -188,15 +221,27 @@ if (cmd === "uninstall") {
 
 if (cmd === "start") {
   const { fork } = await import("node:child_process");
-  const child = fork(process.argv[1], ["serve"], { detached: true, stdio: "ignore" });
+  const existing = readPid();
+  if (existing && isProcessAlive(existing)) {
+    console.error(`memoryhub: already running (PID ${existing}) — use "memoryhub status"`);
+    process.exit(1);
+  }
+  const portHolder = findServerProcess();
+  if (portHolder) {
+    console.error(`memoryhub: port already in use by an untracked instance (PID ${portHolder}) — run "memoryhub stop" first`);
+    process.exit(1);
+  }
+  const child = fork(process.argv[1], ["serve"], { detached: true, stdio: ["ignore", "ignore", "pipe", "ipc"] });
   child.unref();
   let started = false;
-  child.on("error", () => { if (!started) { console.error("memoryhub: failed to start"); process.exit(1); } });
-  child.on("exit", (code) => { if (!started) { console.error(`memoryhub: exited immediately (code ${code})`); process.exit(1); } });
+  let stderr = "";
+  child.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+  child.on("error", () => { if (!started) { console.error(`memoryhub: failed to start${stderr ? `: ${stderr.trim()}` : ""}`); process.exit(1); } });
+  child.on("exit", (code) => { if (!started) { console.error(`memoryhub: failed to start (code ${code})${stderr ? `: ${stderr.trim()}` : ""}`); process.exit(1); } });
   await new Promise(r => setTimeout(r, 500));
   started = true;
   if (!child.pid || !process.kill(child.pid, 0)) {
-    console.error("memoryhub: failed to start");
+    console.error(`memoryhub: failed to start${stderr ? `: ${stderr.trim()}` : ""}`);
     process.exit(1);
   }
   writeFileSync(PID_FILE, String(child.pid));
@@ -206,19 +251,21 @@ if (cmd === "start") {
 
 if (cmd === "stop") {
   const pid = readPid();
-  if (!pid) { console.log("memoryhub not running"); process.exit(0); }
-  if (!isProcessAlive(pid)) { removePid(); console.log("memoryhub not running"); process.exit(0); }
-  try {
-    process.kill(pid, "SIGTERM");
-    for (let i = 0; i < 25; i++) {
-      await new Promise(r => setTimeout(r, 200));
-      if (!isProcessAlive(pid)) { removePid(); console.log("memoryhub stopped"); process.exit(0); }
+  if (!pid || !isProcessAlive(pid)) {
+    const untracked = findServerProcess();
+    if (untracked && killProcess(untracked)) {
+      removePid();
+      console.log(`memoryhub stopped (PID ${untracked})`);
+    } else {
+      removePid();
+      console.log("memoryhub not running");
     }
-    try { process.kill(pid, "SIGKILL"); } catch { /* not available on Windows */ }
-    await new Promise(r => setTimeout(r, 500));
+    process.exit(0);
+  }
+  if (killProcess(pid)) {
     removePid();
-    console.log("memoryhub force killed");
-  } catch {
+    console.log("memoryhub stopped");
+  } else {
     removePid();
     console.log("memoryhub not running");
   }
@@ -227,10 +274,14 @@ if (cmd === "stop") {
 
 if (cmd === "status") {
   const pid = readPid();
-  if (!pid) { console.log("memoryhub: stopped"); process.exit(0); }
-  if (isProcessAlive(pid)) {
+  if (pid && isProcessAlive(pid)) {
     console.log("memoryhub: running (PID %d)", pid);
-  } else { removePid(); console.log("memoryhub: stopped (stale PID)"); }
+  } else {
+    const untracked = findServerProcess();
+    if (untracked) console.log("memoryhub: running (PID %d, not tracked in PID file)", untracked);
+    else console.log("memoryhub: stopped");
+    if (pid) removePid();
+  }
   process.exit(0);
 }
 
@@ -252,9 +303,19 @@ if (cmd === "serve") {
   }
   const { httpServer, close } = createHttpServer(() => createMcpServer(version));
 
-  writeFileSync(PID_FILE, String(process.pid));
   const port = Number(process.env.MEMORYHUB_PORT) || 9876;
-  httpServer.listen(port, () => console.log("memoryhub serving on http://localhost:%d", port));
+  httpServer.on("error", (err) => {
+    if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
+      console.error(`memoryhub: port ${port} already in use — is another instance running? Check "memoryhub status"`);
+    } else {
+      console.error("memoryhub: server error: " + err.message);
+    }
+    process.exit(1);
+  });
+  httpServer.listen(port, () => {
+    writeFileSync(PID_FILE, String(process.pid));
+    console.log("memoryhub serving on http://localhost:%d", port);
+  });
 
   const shutdown = async () => {
     console.log("\nmemoryhub: shutting down...");
