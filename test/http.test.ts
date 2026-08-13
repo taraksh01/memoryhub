@@ -238,3 +238,30 @@ test("re-initializing an existing session is rejected", async () => {
   assert.equal(status, 400);
   mock.restoreAll();
 });
+
+test("idle sessions are pruned after the idle timeout", async () => {
+  const tiny = createHttpServer(() => createMcpServer("test"), { sessionIdleMs: 50 });
+  await new Promise<void>((resolve) => tiny.httpServer.listen(0, "127.0.0.1", resolve));
+  const tinyPort = (tiny.httpServer.address() as AddressInfo).port;
+  const tinyBase = `http://127.0.0.1:${tinyPort}`;
+  try {
+    const initRes = await fetch(`${tinyBase}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT },
+      body: INIT,
+    });
+    assert.equal(initRes.status, 200);
+    const sessionId = initRes.headers.get("mcp-session-id");
+    assert.ok(sessionId);
+    await initRes.text();
+    await new Promise((r) => setTimeout(r, 1500));
+    const after = await fetch(`${tinyBase}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT, "mcp-session-id": sessionId! },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/list", params: {} }),
+    });
+    assert.equal(after.status, 404);
+  } finally {
+    await tiny.close();
+  }
+});

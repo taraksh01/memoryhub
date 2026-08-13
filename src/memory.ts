@@ -218,6 +218,7 @@ export async function getMemory(memory_id: string) {
 }
 
 export async function updateMemory(memory_id: string, text: string) {
+  if (text.length > MAX_INPUT) throw new Error(`Input too long (${text.length} chars, max ${MAX_INPUT})`);
   requireEmbedConfig();
   const existing = await qdrant().retrieve(getConfig("COLLECTION"), { ids: [memory_id], with_payload: true });
   if (!existing.length) throw new Error(`Memory not found: ${memory_id}`);

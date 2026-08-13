@@ -8,9 +8,16 @@ export interface HttpHandle {
   close: () => Promise<void>;
 }
 
+export interface HttpServerOptions {
+  sessionIdleMs?: number;
+}
+
+const DEFAULT_SESSION_IDLE_MS = 60 * 60 * 1000;
+
 interface Session {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
+  lastSeen: number;
 }
 
 function sessionIdFrom(req: IncomingMessage): string | undefined {
@@ -18,8 +25,9 @@ function sessionIdFrom(req: IncomingMessage): string | undefined {
   return typeof h === "string" ? h : undefined;
 }
 
-export function createHttpServer(serverFactory: () => McpServer): HttpHandle {
+export function createHttpServer(serverFactory: () => McpServer, options: HttpServerOptions = {}): HttpHandle {
   const sessions = new Map<string, Session>();
+  const idleMs = options.sessionIdleMs ?? DEFAULT_SESSION_IDLE_MS;
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -30,6 +38,7 @@ export function createHttpServer(serverFactory: () => McpServer): HttpHandle {
           res.writeHead(400).end("Bad Request: Invalid or missing session ID");
           return;
         }
+        session.lastSeen = Date.now();
         await session.transport.handleRequest(req, res);
       } else if (req.method === "POST" && req.url === "/mcp") {
         const sessionId = sessionIdFrom(req);
@@ -44,15 +53,16 @@ export function createHttpServer(serverFactory: () => McpServer): HttpHandle {
           created = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (id) => {
-              if (created) sessions.set(id, { server, transport: created });
+              if (created) sessions.set(id, { server, transport: created, lastSeen: Date.now() });
             },
           });
-          session = { server, transport: created };
+          session = { server, transport: created, lastSeen: Date.now() };
           created.onclose = () => {
             if (created?.sessionId) sessions.delete(created.sessionId);
           };
           await server.connect(created);
         }
+        session.lastSeen = Date.now();
         await session.transport.handleRequest(req, res);
       } else if (req.method === "DELETE" && req.url === "/mcp") {
         const sessionId = sessionIdFrom(req);
@@ -61,6 +71,7 @@ export function createHttpServer(serverFactory: () => McpServer): HttpHandle {
           res.writeHead(400).end("Bad Request: Invalid or missing session ID");
           return;
         }
+        session.lastSeen = Date.now();
         await session.transport.close();
         sessions.delete(sessionId);
         res.writeHead(200).end("Session closed");
@@ -72,10 +83,29 @@ export function createHttpServer(serverFactory: () => McpServer): HttpHandle {
     }
   });
 
-  const close = async () => {
-    for (const s of [...sessions.values()]) {
-      try { await s.transport.close(); } catch {}
+  const prune = () => {
+    const now = Date.now();
+    for (const [id, s] of sessions) {
+      if (now - s.lastSeen > idleMs) {
+        try { s.transport.close(); } catch {}
+        sessions.delete(id);
+        console.error(`memoryhub: pruned idle session ${id}`);
+      }
     }
+  };
+  const pruneTimer = setInterval(prune, Math.max(500, Math.min(60_000, idleMs / 2)));
+  pruneTimer.unref();
+
+  const close = async () => {
+    const closeSession = async (s: Session) => {
+      try {
+        await Promise.race([
+          s.transport.close(),
+          new Promise((r) => setTimeout(r, 2000)),
+        ]);
+      } catch {}
+    };
+    await Promise.all([...sessions.values()].map(closeSession));
     sessions.clear();
     await new Promise<void>((resolve) => {
       const timeout = setTimeout(() => { httpServer.closeAllConnections(); resolve(); }, 5000);

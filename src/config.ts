@@ -6,6 +6,7 @@ export interface MemoryHubConfig {
   qdrant?: { url?: string };
   collection?: string;
   vector_size?: number;
+  retry_delay_ms?: number;
   llm?: { model?: string; base_url?: string; api_key?: string };
   embedder?: { model?: string; base_url?: string; api_key?: string };
 }
@@ -29,12 +30,20 @@ function parseConfigFile(p: string): MemoryHubConfig | null {
   try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return null; }
 }
 
+const warnedUnparseable = new Set<string>();
+
 function loadConfigFile(): { path: string; config: MemoryHubConfig } | null {
   for (const p of configPaths()) {
     if (existsSync(p)) {
       const parsed = parseConfigFile(p);
-      if (parsed !== null) return { path: p, config: parsed };
-      console.error(`memoryhub: warning: ignoring unparseable config file ${p}`);
+      if (parsed !== null) {
+        if (warnedUnparseable.has(p)) warnedUnparseable.delete(p);
+        return { path: p, config: parsed };
+      }
+      if (!warnedUnparseable.has(p)) {
+        warnedUnparseable.add(p);
+        console.error(`memoryhub: warning: ignoring unparseable config file ${p}`);
+      }
     }
   }
   return null;
@@ -90,7 +99,7 @@ function fileValue(key: string): string | undefined {
     case "EMBED_MODEL": return c.embedder?.model;
     case "EMBED_BASE": return c.embedder?.base_url;
     case "EMBED_KEY": return c.embedder?.api_key;
-    case "RETRY_DELAY_MS": return undefined;
+    case "RETRY_DELAY_MS": return typeof c.retry_delay_ms === "number" ? String(c.retry_delay_ms) : undefined;
   }
   return undefined;
 }
@@ -184,7 +193,7 @@ export function reloadConfig(): string[] {
 
   const changed = [...VALID_KEYS].filter((k) => getConfig(k) !== before[k]);
   if (changed.length > 0) {
-    console.log(`memoryhub: config hot-reloaded (${changed.join(", ")})`);
+    console.error(`memoryhub: config hot-reloaded (${changed.join(", ")})`);
     for (const fn of changeListeners) {
       try { fn(changed); } catch (e) { console.error(`memoryhub: config change handler failed: ${e instanceof Error ? e.message : String(e)}`); }
     }

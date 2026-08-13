@@ -31,6 +31,9 @@ function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); } catch { return false; }
   if (process.platform === "linux") {
     try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+      const state = stat.match(/\)\s+([A-Z])/)?.[1];
+      if (state === "Z") return false;
       const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf-8");
       if (!cmdline.includes("memoryhub") && !cmdline.includes("dist/index.js")) return false;
     } catch { return false; }
@@ -107,16 +110,6 @@ function qdrantHealthUrl() {
 function qdrantProbe(): Promise<Response> {
   return fetch(qdrantHealthUrl(), { signal: AbortSignal.timeout(3000) });
 }
-
-onConfigChange(async (changedKeys) => {
-  if (!changedKeys.some((k) => k === "COLLECTION" || k === "VECTOR_SIZE")) return;
-  try {
-    await ensureCollection();
-    console.log("memoryhub: collection verified after config reload");
-  } catch (err) {
-    console.error("memoryhub: collection check failed after config reload: " + (err instanceof Error ? err.message : err));
-  }
-});
 
 async function ensureQdrant(): Promise<void> {
   try {
@@ -273,9 +266,14 @@ if (cmd === "stop") {
   const pid = readPid();
   if (!pid || !isProcessAlive(pid)) {
     const untracked = findServerProcess();
-    if (untracked && killProcess(untracked)) {
-      removePid();
-      console.log(`memoryhub stopped (PID ${untracked})`);
+    if (untracked) {
+      if (killProcess(untracked)) {
+        removePid();
+        console.log(`memoryhub stopped (PID ${untracked})`);
+      } else {
+        removePid();
+        console.error(`memoryhub: failed to stop (PID ${untracked}) — process still alive`);
+      }
     } else {
       removePid();
       console.log("memoryhub not running");
@@ -287,7 +285,7 @@ if (cmd === "stop") {
     console.log("memoryhub stopped");
   } else {
     removePid();
-    console.log("memoryhub not running");
+    console.error("memoryhub: failed to stop (PID %d) — process still alive", pid);
   }
   process.exit(0);
 }
@@ -316,6 +314,16 @@ if (cmd !== undefined && cmd !== "serve" && cmd !== "bootstrap") {
   process.exit(1);
 }
 
+onConfigChange(async (changedKeys) => {
+  if (!changedKeys.some((k) => k === "COLLECTION" || k === "VECTOR_SIZE")) return;
+  try {
+    await ensureCollection();
+    console.error("memoryhub: collection verified after config reload");
+  } catch (err) {
+    console.error("memoryhub: collection check failed after config reload: " + (err instanceof Error ? err.message : err));
+  }
+});
+
 if (cmd === "serve") {
   try { await ensureCollection(); } catch (err) {
     console.error("memoryhub: Qdrant check failed: " + (err instanceof Error ? err.message : err));
@@ -324,6 +332,7 @@ if (cmd === "serve") {
   const { httpServer, close } = createHttpServer(() => createMcpServer(version));
 
   const port = Number(process.env.MEMORYHUB_PORT) || 9876;
+  const host = process.env.MEMORYHUB_HOST || "::";
   httpServer.on("error", (err) => {
     if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
       console.error(`memoryhub: port ${port} already in use — is another instance running? Check "memoryhub status"`);
@@ -332,14 +341,15 @@ if (cmd === "serve") {
     }
     process.exit(1);
   });
-  httpServer.listen(port, () => {
+  httpServer.listen({ port, host, ipv6Only: true }, () => {
     writeFileSync(PID_FILE, String(process.pid));
-    console.log("memoryhub serving on http://localhost:%d", port);
+    console.log("memoryhub serving on http://localhost:%d (host %s)", port, host);
   });
 
   const shutdown = async () => {
-    console.log("\nmemoryhub: shutting down...");
+    console.error("\nmemoryhub: shutting down...");
     removePid();
+    httpServer.closeAllConnections();
     await close();
     process.exit(0);
   };

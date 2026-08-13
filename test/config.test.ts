@@ -180,3 +180,47 @@ test("reloadConfig applies file edits and fires change listeners", async () => {
   c.reloadConfig();
   assert.deepEqual(seen, [["LLM_MODEL", "LLM_BASE"]]);
 });
+
+test("retry_delay_ms is read from config file", async () => {
+  const file = tempConfigFile({ retry_delay_ms: 42 });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  assert.equal(c.getConfig("RETRY_DELAY_MS"), "42");
+});
+
+test("unparseable config file warns only once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const file = join(dir, "config.json");
+  writeFileSync(file, "{not valid json");
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = (m: unknown) => errors.push(String(m));
+  try {
+    c.reloadConfig();
+    c.reloadConfig();
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(errors.filter((e) => e.includes("ignoring unparseable")).length, 0);
+});
+
+test("unparseable config in chain falls back to next path without repeated warnings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const corrupt = join(dir, "bad.json");
+  writeFileSync(corrupt, "{bad");
+  const good = join(dir, "config.json");
+  writeFileSync(good, JSON.stringify({ qdrant: { url: "http://fallback:6333" } }));
+  const c = await freshConfig({ MEMORYHUB_DIR: dir, MEMORYHUB_CONFIG: corrupt });
+  assert.equal(c.getConfig("QDRANT_URL"), "http://fallback:6333");
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = (m: unknown) => errors.push(String(m));
+  try {
+    c.reloadConfig();
+    c.reloadConfig();
+    c.reloadConfig();
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(errors.filter((e) => e.includes("ignoring unparseable")).length, 0);
+});
