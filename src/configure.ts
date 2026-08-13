@@ -60,6 +60,7 @@ const FILE_KEY_MAP: Record<string, string> = {
   "qdrant.url": "QDRANT_URL",
   collection: "COLLECTION",
   vector_size: "VECTOR_SIZE",
+  retry_delay_ms: "RETRY_DELAY_MS",
   "llm.model": "LLM_MODEL",
   "llm.base_url": "LLM_BASE",
   "llm.api_key": "LLM_KEY",
@@ -103,6 +104,11 @@ export function buildConfig(values: Record<string, string>): MemoryHubConfig {
     if (isNaN(n) || n <= 0) throw new Error(`VECTOR_SIZE must be a positive number, got "${values.VECTOR_SIZE}"`);
     cfg.vector_size = n;
   }
+  if (values.RETRY_DELAY_MS) {
+    const n = Number(values.RETRY_DELAY_MS);
+    if (isNaN(n) || n < 0) throw new Error(`RETRY_DELAY_MS must be a non-negative number, got "${values.RETRY_DELAY_MS}"`);
+    cfg.retry_delay_ms = n;
+  }
   if (values.LLM_MODEL || values.LLM_BASE || values.LLM_KEY) {
     cfg.llm = {};
     if (values.LLM_MODEL) cfg.llm.model = values.LLM_MODEL;
@@ -133,6 +139,7 @@ function mergeConfigs(base: MemoryHubConfig, extra: MemoryHubConfig): MemoryHubC
   if (extra.qdrant) out.qdrant = { ...base.qdrant, ...extra.qdrant };
   if (extra.collection !== undefined) out.collection = extra.collection;
   if (extra.vector_size !== undefined) out.vector_size = extra.vector_size;
+  if (extra.retry_delay_ms !== undefined) out.retry_delay_ms = extra.retry_delay_ms;
   if (extra.llm) out.llm = { ...base.llm, ...extra.llm };
   if (extra.embedder) out.embedder = { ...base.embedder, ...extra.embedder };
   return out;

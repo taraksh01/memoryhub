@@ -48,6 +48,8 @@ Configuration is checked in this order: **environment variable** → **config fi
 
 Config files are looked up in this order (first existing wins): `$MEMORYHUB_CONFIG` → `./memoryhub.json` → `~/.memoryhub/config.json`.
 
+The config **file is hot-reloaded**: edits are picked up within ~1 second without restarting the server (a 1s watcher re-reads the file and logs `config hot-reloaded (...)`). Environment variables are read once at startup, so they still require a restart. Runtime `update_config` values keep precedence over the file until the process restarts.
+
 ### Config file
 
 Create a `memoryhub.json` in your project root, or `config.json` in the memoryhub directory (`~/.memoryhub/` by default):
@@ -59,6 +61,7 @@ Create a `memoryhub.json` in your project root, or `config.json` in the memoryhu
   },
   "collection": "memories",
   "vector_size": 768,
+  "retry_delay_ms": 1000,
   "llm": {
     "model": "gpt-4o-mini",
     "base_url": "https://api.openai.com/v1",
@@ -91,6 +94,7 @@ Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `
 | `EMBED_BASE_URL` | `EMBED_BASE` | — | Embedding API base URL (required) |
 | `EMBED_API_KEY` | `EMBED_KEY` | — | Embedding API key (required) |
 | `MEMORYHUB_PORT` | — | `9876` | Port for HTTP serve mode |
+| `MEMORYHUB_HOST` | — | `::` | Bind host for HTTP serve mode (defaults to IPv6 wildcard; the socket is **IPv6-only**, it does not accept IPv4 connections. Set `0.0.0.0` to bind IPv4 instead) |
 | `MEMORYHUB_RETRY_DELAY_MS` | — | `1000` | Base retry delay for LLM/embed API calls (exponential backoff) |
 
 ## Memory Scopes
@@ -137,7 +141,7 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 | `memoryhub status` | Check daemon status |
 | `memoryhub bootstrap` | Auto-start Qdrant if needed, then serve |
 | `memoryhub configure` | Interactive setup wizard (Qdrant, LLM, embedder) with connectivity checks; `--set KEY=VALUE`, `--file`, `--no-verify` for scripted use |
-| `memoryhub install` | Install auto-start service (systemd/launchd/Windows) |
+| `memoryhub install [--start]` | Install auto-start service (systemd/launchd/Windows); `--start` also starts it immediately |
 | `memoryhub uninstall` | Remove auto-start service |
 | `memoryhub --help` | Show help |
 | `memoryhub --version` | Show version |
@@ -145,7 +149,7 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 ## Transport Modes
 
 - **stdio** (default): Connect MCP clients via stdin/stdout
-- **Streamable HTTP**: `memoryhub serve` starts an HTTP server on port 9876 implementing the MCP Streamable HTTP transport (single `POST /mcp` endpoint, session management via `Mcp-Session-Id` header, `DELETE /mcp` to close a session). Clients must send `Accept: application/json, text/event-stream` on POST requests.
+- **Streamable HTTP**: `memoryhub serve` starts an HTTP server on port 9876 implementing the MCP Streamable HTTP transport (single `POST /mcp` endpoint, session management via `Mcp-Session-Id` header, `DELETE /mcp` to close a session). Clients must send `Accept: application/json, text/event-stream` on POST requests. The server binds to `::` **IPv6-only** by default (no IPv4 socket) — override with `MEMORYHUB_HOST`. Sessions idle for over 1 hour are pruned automatically.
 
 Remote clients connect to `http://<host>:9876/mcp`.
 

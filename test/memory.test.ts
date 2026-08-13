@@ -146,3 +146,7 @@ test("fetch timeouts abort the request", async (t) => {
   await assert.rejects(mem.llm([{ role: "user", content: "hi" }]), /AbortError|fetch|LLM/);
   mock.restoreAll();
 });
+
+test("updateMemory rejects input over MAX_INPUT", async () => {
+  await assert.rejects(mem.updateMemory("id-1", "x".repeat(50001)), /Input too long/);
+});

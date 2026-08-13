@@ -32,11 +32,11 @@ function tempConfigFile(cfg: unknown): string {
 
 test("defaults when no env or config set", async () => {
   const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")) });
-  assert.equal(c.QDRANT_URL, "http://localhost:6333");
-  assert.equal(c.COLLECTION, "memories");
-  assert.equal(c.VECTOR_SIZE, 768);
-  assert.equal(c.LLM_MODEL, "");
-  assert.equal(c.RETRY_DELAY_MS, 1000);
+  assert.equal(c.getConfig("QDRANT_URL"), "http://localhost:6333");
+  assert.equal(c.getConfig("COLLECTION"), "memories");
+  assert.equal(Number(c.getConfig("VECTOR_SIZE")), 768);
+  assert.equal(c.getConfig("LLM_MODEL"), "");
+  assert.equal(Number(c.getConfig("RETRY_DELAY_MS")), 1000);
 });
 
 test("env vars take precedence over config file", async () => {
@@ -47,15 +47,15 @@ test("env vars take precedence over config file", async () => {
     QDRANT_URL: "http://env:6333",
     MEMORYHUB_COLLECTION: "env-col",
   });
-  assert.equal(c.QDRANT_URL, "http://env:6333");
-  assert.equal(c.COLLECTION, "env-col");
+  assert.equal(c.getConfig("QDRANT_URL"), "http://env:6333");
+  assert.equal(c.getConfig("COLLECTION"), "env-col");
 });
 
 test("config file is used when env is unset", async () => {
   const file = tempConfigFile({ qdrant: { url: "http://file:6333" }, collection: "file-col" });
   const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
-  assert.equal(c.QDRANT_URL, "http://file:6333");
-  assert.equal(c.COLLECTION, "file-col");
+  assert.equal(c.getConfig("QDRANT_URL"), "http://file:6333");
+  assert.equal(c.getConfig("COLLECTION"), "file-col");
 });
 
 test("long env aliases are supported", async () => {
@@ -64,8 +64,8 @@ test("long env aliases are supported", async () => {
     LLM_BASE_URL: "http://llm.example.com",
     LLM_API_KEY: "long-alias-key",
   });
-  assert.equal(c.LLM_BASE, "http://llm.example.com");
-  assert.equal(c.LLM_KEY, "long-alias-key");
+  assert.equal(c.getConfig("LLM_BASE"), "http://llm.example.com");
+  assert.equal(c.getConfig("LLM_KEY"), "long-alias-key");
 });
 
 test("empty string env values are honored, not treated as unset", async () => {
@@ -73,7 +73,7 @@ test("empty string env values are honored, not treated as unset", async () => {
     MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")),
     QDRANT_URL: "",
   });
-  assert.equal(c.QDRANT_URL, "");
+  assert.equal(c.getConfig("QDRANT_URL"), "");
 });
 
 test("getConfig returns override after setConfig with valid key", async () => {
@@ -139,4 +139,88 @@ test("getAllConfig masks API keys", async () => {
   assert.equal(all.LLM_KEY, "very****1234");
   assert.ok(!all.LLM_KEY.includes("secret"));
   assert.ok(!all.EMBED_KEY.includes("secret"));
+});
+
+test("reloadConfig picks up config file edits", async () => {
+  const file = tempConfigFile({ qdrant: { url: "http://old:6333" } });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  assert.equal(c.getConfig("QDRANT_URL"), "http://old:6333");
+  writeFileSync(file, JSON.stringify({ qdrant: { url: "http://new:6333" }, llm: { model: "gpt-new" } }));
+  const changed = c.reloadConfig();
+  assert.equal(c.getConfig("QDRANT_URL"), "http://new:6333");
+  assert.equal(c.getConfig("LLM_MODEL"), "gpt-new");
+  assert.ok(changed.includes("QDRANT_URL"));
+  assert.ok(changed.includes("LLM_MODEL"));
+});
+
+test("reloadConfig keeps previous values when file becomes corrupt", async () => {
+  const file = tempConfigFile({ qdrant: { url: "http://old:6333" } });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  assert.equal(c.getConfig("QDRANT_URL"), "http://old:6333");
+  writeFileSync(file, "{not valid json");
+  assert.doesNotThrow(() => c.reloadConfig());
+  assert.equal(c.getConfig("QDRANT_URL"), "http://old:6333");
+});
+
+test("reloadConfig keeps runtime overrides on top of file edits", async () => {
+  const file = tempConfigFile({ qdrant: { url: "http://old:6333" } });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  c.setConfig("QDRANT_URL", "http://override:6333");
+  writeFileSync(file, JSON.stringify({ qdrant: { url: "http://new:6333" } }));
+  c.reloadConfig();
+  assert.equal(c.getConfig("QDRANT_URL"), "http://override:6333");
+});
+
+test("reloadConfig applies file edits and fires change listeners", async () => {
+  const file = tempConfigFile({ llm: { model: "gpt-old" } });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  const seen: string[][] = [];
+  c.onConfigChange((keys) => seen.push(keys));
+  writeFileSync(file, JSON.stringify({ llm: { model: "gpt-new", base_url: "http://llm:2" } }));
+  c.reloadConfig();
+  assert.deepEqual(seen, [["LLM_MODEL", "LLM_BASE"]]);
+});
+
+test("retry_delay_ms is read from config file", async () => {
+  const file = tempConfigFile({ retry_delay_ms: 42 });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  assert.equal(c.getConfig("RETRY_DELAY_MS"), "42");
+});
+
+test("unparseable config file warns only once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const file = join(dir, "config.json");
+  writeFileSync(file, "{not valid json");
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = (m: unknown) => errors.push(String(m));
+  try {
+    c.reloadConfig();
+    c.reloadConfig();
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(errors.filter((e) => e.includes("ignoring unparseable")).length, 0);
+});
+
+test("unparseable config in chain falls back to next path without repeated warnings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const corrupt = join(dir, "bad.json");
+  writeFileSync(corrupt, "{bad");
+  const good = join(dir, "config.json");
+  writeFileSync(good, JSON.stringify({ qdrant: { url: "http://fallback:6333" } }));
+  const c = await freshConfig({ MEMORYHUB_DIR: dir, MEMORYHUB_CONFIG: corrupt });
+  assert.equal(c.getConfig("QDRANT_URL"), "http://fallback:6333");
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = (m: unknown) => errors.push(String(m));
+  try {
+    c.reloadConfig();
+    c.reloadConfig();
+    c.reloadConfig();
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(errors.filter((e) => e.includes("ignoring unparseable")).length, 0);
 });

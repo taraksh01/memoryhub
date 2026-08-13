@@ -6,10 +6,10 @@ import { ensureCollection } from "./memory.js";
 import { createMcpServer } from "./mcp.js";
 import { createHttpServer } from "./http.js";
 import { runConfigure } from "./configure.js";
-import { MEMORYHUB_DIR, QDRANT_URL } from "./config.js";
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { MEMORYHUB_DIR, getConfig, onConfigChange } from "./config.js";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync, openSync } from "node:fs";
 import { join } from "node:path";
-import { spawn, execSync } from "node:child_process";
+import { spawn, spawnSync, execSync } from "node:child_process";
 import os from "node:os";
 
 const require = createRequire(import.meta.url);
@@ -31,11 +31,76 @@ function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); } catch { return false; }
   if (process.platform === "linux") {
     try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+      const state = stat.match(/\)\s+([A-Z])/)?.[1];
+      if (state === "Z") return false;
       const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf-8");
       if (!cmdline.includes("memoryhub") && !cmdline.includes("dist/index.js")) return false;
     } catch { return false; }
   }
   return true;
+}
+
+function listProcesses(): Array<[number, string]> {
+  if (process.platform === "linux") {
+    const out: Array<[number, string]> = [];
+    try {
+      for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        try {
+          const cmdline = readFileSync(`/proc/${entry}/cmdline`, "utf-8").replace(/\0/g, " ");
+          out.push([Number(entry), cmdline]);
+        } catch {}
+      }
+    } catch {}
+    return out;
+  }
+  if (process.platform === "darwin") {
+    const r = spawnSync("ps", ["-axo", "pid=,args="], { encoding: "utf-8" });
+    if (r.status !== 0 || !r.stdout) return [];
+    const out: Array<[number, string]> = [];
+    for (const line of r.stdout.split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (m) out.push([Number(m[1]), m[2]]);
+    }
+    return out;
+  }
+  if (process.platform === "win32") {
+    const r = spawnSync("wmic", ["process", "get", "processid,commandline"], { encoding: "utf-8" });
+    if (r.status !== 0 || !r.stdout) return [];
+    const out: Array<[number, string]> = [];
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const m = line.trimEnd().match(/^(.*?)\s+(\d+)$/);
+      if (m && m[1] !== "CommandLine") out.push([Number(m[2]), m[1]]);
+    }
+    return out;
+  }
+  return [];
+}
+
+function findServerProcess(): number | null {
+  for (const [pid, cmdline] of listProcesses()) {
+    if (pid === process.pid) continue;
+    if (cmdline.includes("index.js serve") || cmdline.includes("index.js bootstrap")) return pid;
+  }
+  return null;
+}
+
+async function killProcess(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, "SIGTERM");
+    for (let i = 0; i < 25; i++) {
+      await awaitDelay(200);
+      if (!isProcessAlive(pid)) return true;
+    }
+    try { process.kill(pid, "SIGKILL"); } catch {}
+    await awaitDelay(500);
+    return !isProcessAlive(pid);
+  } catch { return false; }
+}
+
+function awaitDelay(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
 }
 
 let cmd = process.argv[2];
@@ -51,7 +116,7 @@ Usage:
   memoryhub status       Check daemon status
   memoryhub bootstrap    Serve + auto-start Qdrant if not running
   memoryhub configure    Interactive setup wizard (--set KEY=VALUE for scripted)
-  memoryhub install      Install auto-start service for current user
+  memoryhub install [--start]  Install auto-start service for current user (--start: start it now)
   memoryhub uninstall    Remove auto-start service
   memoryhub --help, -h   Show this help
   memoryhub --version, -v Show version
@@ -68,7 +133,7 @@ if (cmd === "--help" || cmd === "-h") { showHelp(); process.exit(0); }
 if (cmd === "--version" || cmd === "-v") { console.log(version); process.exit(0); }
 
 function qdrantHealthUrl() {
-  return QDRANT_URL.replace(/\/$/, '') + '/healthz';
+  return getConfig("QDRANT_URL").replace(/\/$/, '') + '/healthz';
 }
 
 function qdrantProbe(): Promise<Response> {
@@ -103,6 +168,7 @@ if (cmd === "bootstrap") {
 }
 
 if (cmd === "install") {
+  const startNow = process.argv.includes("--start");
   const scriptPath = process.argv[1];
   const platform = process.platform;
   if (platform === "linux") {
@@ -123,7 +189,11 @@ WantedBy=default.target
     writeFileSync(join(dir, "memoryhub.service"), service);
     try { execSync("systemctl --user daemon-reload", { stdio: "inherit" }); } catch { console.error("memoryhub: failed to reload systemd"); process.exit(1); }
     try { execSync("systemctl --user enable memoryhub.service", { stdio: "inherit" }); } catch { console.error("memoryhub: failed to enable service"); process.exit(1); }
-    console.log("memoryhub: installed as systemd user service");
+    if (startNow) {
+      try { execSync("systemctl --user start memoryhub.service", { stdio: "inherit" }); }
+      catch { console.error("memoryhub: failed to start service — run 'systemctl --user start memoryhub.service' manually"); process.exit(1); }
+    }
+    console.log(startNow ? "memoryhub: installed and started as systemd user service" : "memoryhub: installed as systemd user service");
   } else if (platform === "darwin") {
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -148,14 +218,18 @@ WantedBy=default.target
     writeFileSync(join(dir, "com.memoryhub.plist"), plist);
     try { execSync("launchctl unload " + join(dir, "com.memoryhub.plist"), { stdio: "ignore" }); } catch {}
     try { execSync("launchctl load " + join(dir, "com.memoryhub.plist"), { stdio: "inherit" }); } catch { console.error("memoryhub: failed to load launchd agent"); process.exit(1); }
-    console.log("memoryhub: installed as launchd agent");
+    console.log(startNow ? "memoryhub: installed as launchd agent (started)" : "memoryhub: installed as launchd agent (starts at login)");
   } else if (platform === "win32") {
     const startupDir = join(os.homedir(), "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup");
     mkdirSync(startupDir, { recursive: true });
     const vbs = `CreateObject("WScript.Shell").Run "${process.execPath} ${scriptPath} bootstrap", 0, False`;
     writeFileSync(join(startupDir, "memoryhub.bat"), `@echo off\nstart /b "" "${process.execPath}" "${scriptPath}" bootstrap`);
     writeFileSync(join(startupDir, "memoryhub.vbs"), vbs);
-    console.log("memoryhub: installed in Windows Startup folder");
+    if (startNow) {
+      const child = spawn(process.execPath, [scriptPath, "bootstrap"], { detached: true, stdio: "ignore" });
+      child.unref();
+    }
+    console.log(startNow ? "memoryhub: installed in Windows Startup folder (started)" : "memoryhub: installed in Windows Startup folder");
   } else {
     console.log("memoryhub: unsupported platform – add manual startup: " + process.execPath + " " + scriptPath + " bootstrap");
   }
@@ -166,6 +240,7 @@ if (cmd === "uninstall") {
   const platform = process.platform;
   if (platform === "linux") {
     const servicePath = join(os.homedir(), ".config/systemd/user/memoryhub.service");
+    try { execSync("systemctl --user stop memoryhub.service", { stdio: "ignore" }); } catch {}
     try { execSync("systemctl --user disable memoryhub.service", { stdio: "ignore" }); } catch {}
     if (existsSync(servicePath)) unlinkSync(servicePath);
     execSync("systemctl --user daemon-reload", { stdio: "ignore" });
@@ -188,49 +263,86 @@ if (cmd === "uninstall") {
 
 if (cmd === "start") {
   const { fork } = await import("node:child_process");
-  const child = fork(process.argv[1], ["serve"], { detached: true, stdio: "ignore" });
-  child.unref();
-  let started = false;
-  child.on("error", () => { if (!started) { console.error("memoryhub: failed to start"); process.exit(1); } });
-  child.on("exit", (code) => { if (!started) { console.error(`memoryhub: exited immediately (code ${code})`); process.exit(1); } });
-  await new Promise(r => setTimeout(r, 500));
-  started = true;
-  if (!child.pid || !process.kill(child.pid, 0)) {
-    console.error("memoryhub: failed to start");
+  const existing = readPid();
+  if (existing && isProcessAlive(existing)) {
+    console.error(`memoryhub: already running (PID ${existing}) — use "memoryhub status"`);
     process.exit(1);
   }
-  writeFileSync(PID_FILE, String(child.pid));
-  console.log("memoryhub started (PID: %d)", child.pid);
-  process.exit(0);
+  const portHolder = findServerProcess();
+  if (portHolder) {
+    console.error(`memoryhub: port already in use by an untracked instance (PID ${portHolder}) — run "memoryhub stop" first`);
+    process.exit(1);
+  }
+  const logPath = join(MEMORYHUB_DIR, "memoryhub.log");
+  mkdirSync(MEMORYHUB_DIR, { recursive: true });
+  let logFd: number | undefined;
+  try { logFd = openSync(logPath, "a"); } catch {}
+  const child = fork(process.argv[1], ["serve"], { detached: true, stdio: ["ignore", "ignore", logFd ?? "ignore", "ipc"] });
+  child.unref();
+  let failed: string | null = null;
+  child.on("error", () => { if (!failed) failed = "failed to start"; });
+  child.on("exit", (code) => {
+    if (failed) return;
+    let tail = "";
+    try {
+      tail = readFileSync(logPath, "utf-8").trim().split("\n").slice(-10).join("\n");
+    } catch {}
+    failed = `failed to start (code ${code})${tail ? `:\n${tail}` : ""}`;
+  });
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    if (failed) {
+      console.error(`memoryhub: ${failed}`);
+      process.exit(1);
+    }
+    if (readPid() === child.pid) {
+      console.log(`memoryhub started (PID: %d) — logs: ${logPath}`, child.pid);
+      process.exit(0);
+    }
+    await awaitDelay(200);
+  }
+  console.error(failed ? `memoryhub: ${failed}` : `memoryhub: timed out waiting for the server to start — check the log: ${logPath}`);
+  process.exit(1);
 }
 
 if (cmd === "stop") {
   const pid = readPid();
-  if (!pid) { console.log("memoryhub not running"); process.exit(0); }
-  if (!isProcessAlive(pid)) { removePid(); console.log("memoryhub not running"); process.exit(0); }
-  try {
-    process.kill(pid, "SIGTERM");
-    for (let i = 0; i < 25; i++) {
-      await new Promise(r => setTimeout(r, 200));
-      if (!isProcessAlive(pid)) { removePid(); console.log("memoryhub stopped"); process.exit(0); }
+  if (!pid || !isProcessAlive(pid)) {
+    const untracked = findServerProcess();
+    if (untracked) {
+      if (await killProcess(untracked)) {
+        removePid();
+        console.log(`memoryhub stopped (PID ${untracked})`);
+      } else {
+        removePid();
+        console.error(`memoryhub: failed to stop (PID ${untracked}) — process still alive`);
+      }
+    } else {
+      removePid();
+      console.log("memoryhub not running");
     }
-    try { process.kill(pid, "SIGKILL"); } catch { /* not available on Windows */ }
-    await new Promise(r => setTimeout(r, 500));
+    process.exit(0);
+  }
+  if (await killProcess(pid)) {
     removePid();
-    console.log("memoryhub force killed");
-  } catch {
+    console.log("memoryhub stopped");
+  } else {
     removePid();
-    console.log("memoryhub not running");
+    console.error("memoryhub: failed to stop (PID %d) — process still alive", pid);
   }
   process.exit(0);
 }
 
 if (cmd === "status") {
   const pid = readPid();
-  if (!pid) { console.log("memoryhub: stopped"); process.exit(0); }
-  if (isProcessAlive(pid)) {
+  if (pid && isProcessAlive(pid)) {
     console.log("memoryhub: running (PID %d)", pid);
-  } else { removePid(); console.log("memoryhub: stopped (stale PID)"); }
+  } else {
+    const untracked = findServerProcess();
+    if (untracked) console.log("memoryhub: running (PID %d, not tracked in PID file)", untracked);
+    else console.log("memoryhub: stopped");
+    if (pid) removePid();
+  }
   process.exit(0);
 }
 
@@ -245,6 +357,16 @@ if (cmd !== undefined && cmd !== "serve" && cmd !== "bootstrap") {
   process.exit(1);
 }
 
+onConfigChange(async (changedKeys) => {
+  if (!changedKeys.some((k) => k === "COLLECTION" || k === "VECTOR_SIZE")) return;
+  try {
+    await ensureCollection();
+    console.error("memoryhub: collection verified after config reload");
+  } catch (err) {
+    console.error("memoryhub: collection check failed after config reload: " + (err instanceof Error ? err.message : err));
+  }
+});
+
 if (cmd === "serve") {
   try { await ensureCollection(); } catch (err) {
     console.error("memoryhub: Qdrant check failed: " + (err instanceof Error ? err.message : err));
@@ -252,13 +374,27 @@ if (cmd === "serve") {
   }
   const { httpServer, close } = createHttpServer(() => createMcpServer(version));
 
-  writeFileSync(PID_FILE, String(process.pid));
   const port = Number(process.env.MEMORYHUB_PORT) || 9876;
-  httpServer.listen(port, () => console.log("memoryhub serving on http://localhost:%d", port));
+  const host = process.env.MEMORYHUB_HOST || "::";
+  httpServer.on("error", (err) => {
+    if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
+      console.error(`memoryhub: port ${port} already in use — is another instance running? Check "memoryhub status"`);
+    } else {
+      console.error("memoryhub: server error: " + err.message);
+    }
+    process.exit(1);
+  });
+  httpServer.listen({ port, host, ipv6Only: true }, () => {
+    mkdirSync(MEMORYHUB_DIR, { recursive: true });
+    writeFileSync(PID_FILE, String(process.pid));
+    const display = host === "::" || host === "0.0.0.0" || host === "" ? `http://localhost:${port}` : `http://${host}:${port}`;
+    console.log(`memoryhub serving on ${display} (host ${host})`);
+  });
 
   const shutdown = async () => {
-    console.log("\nmemoryhub: shutting down...");
+    console.error("\nmemoryhub: shutting down...");
     removePid();
+    httpServer.closeAllConnections();
     await close();
     process.exit(0);
   };
