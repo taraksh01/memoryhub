@@ -9,7 +9,7 @@ import { runConfigure } from "./configure.js";
 import { MEMORYHUB_DIR, getConfig, onConfigChange } from "./config.js";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync, openSync } from "node:fs";
 import { join } from "node:path";
-import { spawn, execSync } from "node:child_process";
+import { spawn, spawnSync, execSync } from "node:child_process";
 import os from "node:os";
 
 const require = createRequire(import.meta.url);
@@ -41,19 +41,48 @@ function isProcessAlive(pid: number): boolean {
   return true;
 }
 
-function findServerProcess(): number | null {
-  if (process.platform !== "linux") return null;
-  try {
-    for (const entry of readdirSync("/proc")) {
-      if (!/^\d+$/.test(entry)) continue;
-      const pid = Number(entry);
-      if (pid === process.pid) continue;
-      try {
-        const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf-8").replace(/\0/g, " ");
-        if (cmdline.includes("index.js serve") || cmdline.includes("index.js bootstrap")) return pid;
-      } catch {}
+function listProcesses(): Array<[number, string]> {
+  if (process.platform === "linux") {
+    const out: Array<[number, string]> = [];
+    try {
+      for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        try {
+          const cmdline = readFileSync(`/proc/${entry}/cmdline`, "utf-8").replace(/\0/g, " ");
+          out.push([Number(entry), cmdline]);
+        } catch {}
+      }
+    } catch {}
+    return out;
+  }
+  if (process.platform === "darwin") {
+    const r = spawnSync("ps", ["-axo", "pid=,args="], { encoding: "utf-8" });
+    if (r.status !== 0 || !r.stdout) return [];
+    const out: Array<[number, string]> = [];
+    for (const line of r.stdout.split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (m) out.push([Number(m[1]), m[2]]);
     }
-  } catch {}
+    return out;
+  }
+  if (process.platform === "win32") {
+    const r = spawnSync("wmic", ["process", "get", "processid,commandline"], { encoding: "utf-8" });
+    if (r.status !== 0 || !r.stdout) return [];
+    const out: Array<[number, string]> = [];
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const m = line.trimEnd().match(/^(.*?)\s+(\d+)$/);
+      if (m && m[1] !== "CommandLine") out.push([Number(m[2]), m[1]]);
+    }
+    return out;
+  }
+  return [];
+}
+
+function findServerProcess(): number | null {
+  for (const [pid, cmdline] of listProcesses()) {
+    if (pid === process.pid) continue;
+    if (cmdline.includes("index.js serve") || cmdline.includes("index.js bootstrap")) return pid;
+  }
   return null;
 }
 
@@ -87,7 +116,7 @@ Usage:
   memoryhub status       Check daemon status
   memoryhub bootstrap    Serve + auto-start Qdrant if not running
   memoryhub configure    Interactive setup wizard (--set KEY=VALUE for scripted)
-  memoryhub install      Install auto-start service for current user
+  memoryhub install [--start]  Install auto-start service for current user (--start: start it now)
   memoryhub uninstall    Remove auto-start service
   memoryhub --help, -h   Show this help
   memoryhub --version, -v Show version
@@ -139,6 +168,7 @@ if (cmd === "bootstrap") {
 }
 
 if (cmd === "install") {
+  const startNow = process.argv.includes("--start");
   const scriptPath = process.argv[1];
   const platform = process.platform;
   if (platform === "linux") {
@@ -159,7 +189,11 @@ WantedBy=default.target
     writeFileSync(join(dir, "memoryhub.service"), service);
     try { execSync("systemctl --user daemon-reload", { stdio: "inherit" }); } catch { console.error("memoryhub: failed to reload systemd"); process.exit(1); }
     try { execSync("systemctl --user enable memoryhub.service", { stdio: "inherit" }); } catch { console.error("memoryhub: failed to enable service"); process.exit(1); }
-    console.log("memoryhub: installed as systemd user service");
+    if (startNow) {
+      try { execSync("systemctl --user start memoryhub.service", { stdio: "inherit" }); }
+      catch { console.error("memoryhub: failed to start service — run 'systemctl --user start memoryhub.service' manually"); process.exit(1); }
+    }
+    console.log(startNow ? "memoryhub: installed and started as systemd user service" : "memoryhub: installed as systemd user service");
   } else if (platform === "darwin") {
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -184,14 +218,18 @@ WantedBy=default.target
     writeFileSync(join(dir, "com.memoryhub.plist"), plist);
     try { execSync("launchctl unload " + join(dir, "com.memoryhub.plist"), { stdio: "ignore" }); } catch {}
     try { execSync("launchctl load " + join(dir, "com.memoryhub.plist"), { stdio: "inherit" }); } catch { console.error("memoryhub: failed to load launchd agent"); process.exit(1); }
-    console.log("memoryhub: installed as launchd agent");
+    console.log(startNow ? "memoryhub: installed as launchd agent (started)" : "memoryhub: installed as launchd agent (starts at login)");
   } else if (platform === "win32") {
     const startupDir = join(os.homedir(), "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup");
     mkdirSync(startupDir, { recursive: true });
     const vbs = `CreateObject("WScript.Shell").Run "${process.execPath} ${scriptPath} bootstrap", 0, False`;
     writeFileSync(join(startupDir, "memoryhub.bat"), `@echo off\nstart /b "" "${process.execPath}" "${scriptPath}" bootstrap`);
     writeFileSync(join(startupDir, "memoryhub.vbs"), vbs);
-    console.log("memoryhub: installed in Windows Startup folder");
+    if (startNow) {
+      const child = spawn(process.execPath, [scriptPath, "bootstrap"], { detached: true, stdio: "ignore" });
+      child.unref();
+    }
+    console.log(startNow ? "memoryhub: installed in Windows Startup folder (started)" : "memoryhub: installed in Windows Startup folder");
   } else {
     console.log("memoryhub: unsupported platform – add manual startup: " + process.execPath + " " + scriptPath + " bootstrap");
   }
@@ -202,6 +240,7 @@ if (cmd === "uninstall") {
   const platform = process.platform;
   if (platform === "linux") {
     const servicePath = join(os.homedir(), ".config/systemd/user/memoryhub.service");
+    try { execSync("systemctl --user stop memoryhub.service", { stdio: "ignore" }); } catch {}
     try { execSync("systemctl --user disable memoryhub.service", { stdio: "ignore" }); } catch {}
     if (existsSync(servicePath)) unlinkSync(servicePath);
     execSync("systemctl --user daemon-reload", { stdio: "ignore" });
@@ -235,6 +274,7 @@ if (cmd === "start") {
     process.exit(1);
   }
   const logPath = join(MEMORYHUB_DIR, "memoryhub.log");
+  mkdirSync(MEMORYHUB_DIR, { recursive: true });
   let logFd: number | undefined;
   try { logFd = openSync(logPath, "a"); } catch {}
   const child = fork(process.argv[1], ["serve"], { detached: true, stdio: ["ignore", "ignore", logFd ?? "ignore", "ipc"] });
@@ -345,8 +385,10 @@ if (cmd === "serve") {
     process.exit(1);
   });
   httpServer.listen({ port, host, ipv6Only: true }, () => {
+    mkdirSync(MEMORYHUB_DIR, { recursive: true });
     writeFileSync(PID_FILE, String(process.pid));
-    console.log("memoryhub serving on http://localhost:%d (host %s)", port, host);
+    const display = host === "::" || host === "0.0.0.0" || host === "" ? `http://localhost:${port}` : `http://${host}:${port}`;
+    console.log(`memoryhub serving on ${display} (host ${host})`);
   });
 
   const shutdown = async () => {

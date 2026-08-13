@@ -141,7 +141,7 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 | `memoryhub status` | Check daemon status |
 | `memoryhub bootstrap` | Auto-start Qdrant if needed, then serve |
 | `memoryhub configure` | Interactive setup wizard (Qdrant, LLM, embedder) with connectivity checks; `--set KEY=VALUE`, `--file`, `--no-verify` for scripted use |
-| `memoryhub install` | Install auto-start service (systemd/launchd/Windows) |
+| `memoryhub install [--start]` | Install auto-start service (systemd/launchd/Windows); `--start` also starts it immediately |
 | `memoryhub uninstall` | Remove auto-start service |
 | `memoryhub --help` | Show help |
 | `memoryhub --version` | Show version |
