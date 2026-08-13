@@ -57,15 +57,15 @@ function findServerProcess(): number | null {
   return null;
 }
 
-function killProcess(pid: number): boolean {
+async function killProcess(pid: number): Promise<boolean> {
   try {
     process.kill(pid, "SIGTERM");
     for (let i = 0; i < 25; i++) {
-      awaitDelay(200);
+      await awaitDelay(200);
       if (!isProcessAlive(pid)) return true;
     }
     try { process.kill(pid, "SIGKILL"); } catch {}
-    awaitDelay(500);
+    await awaitDelay(500);
     return !isProcessAlive(pid);
   } catch { return false; }
 }
@@ -239,27 +239,30 @@ if (cmd === "start") {
   try { logFd = openSync(logPath, "a"); } catch {}
   const child = fork(process.argv[1], ["serve"], { detached: true, stdio: ["ignore", "ignore", logFd ?? "ignore", "ipc"] });
   child.unref();
-  let started = false;
-  child.on("error", () => { if (!started) { console.error("memoryhub: failed to start"); process.exit(1); } });
+  let failed: string | null = null;
+  child.on("error", () => { if (!failed) failed = "failed to start"; });
   child.on("exit", (code) => {
-    if (!started) {
-      let tail = "";
-      try {
-        tail = readFileSync(logPath, "utf-8").trim().split("\n").slice(-10).join("\n");
-      } catch {}
-      console.error(`memoryhub: failed to start (code ${code})${tail ? `:\n${tail}` : ""}`);
+    if (failed) return;
+    let tail = "";
+    try {
+      tail = readFileSync(logPath, "utf-8").trim().split("\n").slice(-10).join("\n");
+    } catch {}
+    failed = `failed to start (code ${code})${tail ? `:\n${tail}` : ""}`;
+  });
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    if (failed) {
+      console.error(`memoryhub: ${failed}`);
       process.exit(1);
     }
-  });
-  await new Promise(r => setTimeout(r, 500));
-  started = true;
-  if (!child.pid || !process.kill(child.pid, 0)) {
-    console.error("memoryhub: failed to start");
-    process.exit(1);
+    if (readPid() === child.pid) {
+      console.log(`memoryhub started (PID: %d) — logs: ${logPath}`, child.pid);
+      process.exit(0);
+    }
+    await awaitDelay(200);
   }
-  writeFileSync(PID_FILE, String(child.pid));
-  console.log(`memoryhub started (PID: %d) — logs: ${logPath}`, child.pid);
-  process.exit(0);
+  console.error(failed ? `memoryhub: ${failed}` : `memoryhub: timed out waiting for the server to start — check the log: ${logPath}`);
+  process.exit(1);
 }
 
 if (cmd === "stop") {
@@ -267,7 +270,7 @@ if (cmd === "stop") {
   if (!pid || !isProcessAlive(pid)) {
     const untracked = findServerProcess();
     if (untracked) {
-      if (killProcess(untracked)) {
+      if (await killProcess(untracked)) {
         removePid();
         console.log(`memoryhub stopped (PID ${untracked})`);
       } else {
@@ -280,7 +283,7 @@ if (cmd === "stop") {
     }
     process.exit(0);
   }
-  if (killProcess(pid)) {
+  if (await killProcess(pid)) {
     removePid();
     console.log("memoryhub stopped");
   } else {
