@@ -384,7 +384,7 @@ if (cmd === "serve") {
     }
     process.exit(1);
   });
-  httpServer.listen({ port, host, ipv6Only: true }, () => {
+  httpServer.listen({ port, host, ipv6Only: process.env.MEMORYHUB_IPV6_ONLY === "true" }, () => {
     mkdirSync(MEMORYHUB_DIR, { recursive: true });
     writeFileSync(PID_FILE, String(process.pid));
     const display = host === "::" || host === "0.0.0.0" || host === "" ? `http://localhost:${port}` : `http://${host}:${port}`;
