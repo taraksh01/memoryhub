@@ -1,6 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { addMemories, searchMemories, listMemories, getMemory, updateMemory, deleteMemories, deleteAllMemories, getStats, healthCheck } from "./memory.js";
+import { addMemories, searchMemories, listMemories, getMemory, getMemories, updateMemory, deleteMemories, deleteAllMemories, batchAddMemories, exportMemories, importMemories, reviewStale, getStats, healthCheck } from "./memory.js";
 import { getAllConfig, mask, setConfig, persistConfig } from "./config.js";
 
 interface ToolArgs {
@@ -10,19 +10,30 @@ interface ToolArgs {
   offset?: string;
   memory_id?: string;
   ids?: string[];
+  items?: unknown[];
+  data?: string;
   key?: string;
   value?: string;
   project?: string;
   source?: string;
+  exact?: boolean;
   importance?: number;
   expires_at?: string;
   dedup?: boolean;
   threshold?: number;
   persist?: boolean;
+  days?: number;
+  older_than_days?: number;
 }
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+const ID_RE = /^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|\d+)$/;
+
+function assertValidId(id: string): void {
+  assert(ID_RE.test(id), `invalid memory id: ${id} (must be a UUID or numeric string)`);
 }
 
 export function createMcpServer(version: string): Server {
@@ -31,12 +42,17 @@ export function createMcpServer(version: string): Server {
   mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       { name: "add_memories", description: "Store text (LLM extracts facts, embeds, stores). Deduplicates semantically similar memories by default.", inputSchema: { type: "object", properties: { text: { type: "string" }, project: { type: "string" }, source: { type: "string" }, importance: { type: "number" }, expires_at: { type: "string" }, dedup: { type: "boolean" }, threshold: { type: "number" } }, required: ["text"] } },
-      { name: "search_memory", description: "Semantic search across stored memories.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, project: { type: "string" } }, required: ["query"] } },
-      { name: "list_memories", description: "List stored memories with pagination.", inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "string" }, project: { type: "string" } } } },
+      { name: "batch_add_memories", description: "Add multiple texts in one call. Each item follows add_memories semantics; results are reported per item and item-level failures do not abort the batch.", inputSchema: { type: "object", properties: { items: { type: "array", items: { type: "object", properties: { text: { type: "string" }, project: { type: "string" }, source: { type: "string" }, importance: { type: "number" }, expires_at: { type: "string" }, dedup: { type: "boolean" }, threshold: { type: "number" } }, required: ["text"] } } }, required: ["items"] } },
+      { name: "search_memory", description: "Semantic search across stored memories. Set exact=true to match the query text verbatim instead of by similarity; filter by project and/or source.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, project: { type: "string" }, source: { type: "string" }, exact: { type: "boolean" } }, required: ["query"] } },
+      { name: "list_memories", description: "List stored memories with pagination; filter by project and/or source.", inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "string" }, project: { type: "string" }, source: { type: "string" } } } },
       { name: "get_memory", description: "Get a single memory by ID.", inputSchema: { type: "object", properties: { memory_id: { type: "string" } }, required: ["memory_id"] } },
+      { name: "get_memories", description: "Get multiple memories by IDs.", inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } }, required: ["ids"] } },
       { name: "update_memory", description: "Update a memory's text (re-embeds).", inputSchema: { type: "object", properties: { memory_id: { type: "string" }, text: { type: "string" }, source: { type: "string" }, importance: { type: "number" }, expires_at: { type: "string" } }, required: ["memory_id", "text"] } },
       { name: "delete_memories", description: "Delete specific memories by IDs.", inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } }, required: ["ids"] } },
       { name: "delete_all_memories", description: "Delete ALL memories (or filter by project).", inputSchema: { type: "object", properties: { project: { type: "string" } } } },
+      { name: "export_memories", description: "Export all memories (optionally filtered by project/source) as JSON for backup or migration.", inputSchema: { type: "object", properties: { project: { type: "string" }, source: { type: "string" } } } },
+      { name: "import_memories", description: "Import memories from export_memories JSON (array or {memories: [...]}). Texts are re-embedded on import; original IDs and metadata are preserved.", inputSchema: { type: "object", properties: { data: { type: "string" } }, required: ["data"] } },
+      { name: "review_stale", description: "Report-only audit of stale memories: expired, expiring soon, or older than N days. Never modifies data.", inputSchema: { type: "object", properties: { project: { type: "string" }, source: { type: "string" }, days: { type: "number" }, older_than_days: { type: "number" }, limit: { type: "number" } } } },
       { name: "memory_stats", description: "Get collection statistics (totals, per project/source, expiry, age).", inputSchema: { type: "object", properties: {} } },
       { name: "get_config", description: "Show current runtime configuration.", inputSchema: { type: "object", properties: {} } },
       { name: "update_config", description: "Update a config value at runtime. Set persist=true to write it to the config file (survives restart).", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" }, persist: { type: "boolean" } }, required: ["key", "value"] } },
@@ -62,23 +78,45 @@ export function createMcpServer(version: string): Server {
           });
           break;
         }
+        case "batch_add_memories": {
+          assert(Array.isArray(a.items) && a.items.length > 0, "items must be a non-empty array");
+          assert(a.items.every((it: unknown) => typeof (it as Record<string, unknown>)?.text === "string"), "each item's text must be a non-empty string");
+          result = await batchAddMemories(a.items as { text: string; project?: string; source?: string; importance?: number; expires_at?: string; dedup?: boolean; threshold?: number }[]);
+          break;
+        }
         case "search_memory": {
           assert(typeof a.query === "string" && a.query, "query is required (string)");
           if (a.limit !== undefined) assert(typeof a.limit === "number" && a.limit > 0, "limit must be a positive number");
           if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
-          result = await searchMemories(a.query, a.limit ?? 10, a.project);
+          if (a.source !== undefined) assert(typeof a.source === "string" && a.source, "source must be a non-empty string");
+          if (a.exact !== undefined) assert(typeof a.exact === "boolean", "exact must be a boolean");
+          result = await searchMemories(a.query, a.limit ?? 10, a.project, { source: a.source, exact: a.exact });
           break;
         }
         case "list_memories": {
           if (a.limit !== undefined) assert(typeof a.limit === "number" && a.limit > 0, "limit must be a positive number");
           if (a.offset !== undefined) assert(typeof a.offset === "string", "offset must be a string");
           if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
-          result = await listMemories(a.limit ?? 100, a.offset, a.project);
+          if (a.source !== undefined) assert(typeof a.source === "string" && a.source, "source must be a non-empty string");
+          result = await listMemories(a.limit ?? 100, a.offset, a.project, a.source);
           break;
         }
-        case "get_memory": { assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required (string)"); result = await getMemory(a.memory_id); break; }
+        case "get_memory": {
+          assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required (string)");
+          assertValidId(a.memory_id);
+          result = await getMemory(a.memory_id);
+          break;
+        }
+        case "get_memories": {
+          assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array of strings");
+          assert(a.ids.every((id: unknown) => typeof id === "string"), "each id must be a string");
+          a.ids.forEach((id: string) => assertValidId(id));
+          result = await getMemories(a.ids);
+          break;
+        }
         case "update_memory": {
           assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required (string)");
+          assertValidId(a.memory_id);
           assert(typeof a.text === "string" && a.text, "text is required (string)");
           result = await updateMemory(a.memory_id, a.text, { source: a.source, importance: a.importance, expires_at: a.expires_at });
           break;
@@ -86,12 +124,33 @@ export function createMcpServer(version: string): Server {
         case "delete_memories": {
           assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array of strings");
           assert(a.ids.every((id: unknown) => typeof id === "string"), "each id must be a string");
+          a.ids.forEach((id: string) => assertValidId(id));
           result = await deleteMemories(a.ids);
           break;
         }
         case "delete_all_memories": {
           if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
           result = await deleteAllMemories(a.project);
+          break;
+        }
+        case "export_memories": {
+          if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
+          if (a.source !== undefined) assert(typeof a.source === "string" && a.source, "source must be a non-empty string");
+          result = await exportMemories(a.project, a.source);
+          break;
+        }
+        case "import_memories": {
+          assert(typeof a.data === "string" && a.data, "data is required (string)");
+          result = await importMemories(a.data);
+          break;
+        }
+        case "review_stale": {
+          if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
+          if (a.source !== undefined) assert(typeof a.source === "string" && a.source, "source must be a non-empty string");
+          if (a.days !== undefined) assert(typeof a.days === "number" && a.days > 0, "days must be a positive number");
+          if (a.older_than_days !== undefined) assert(typeof a.older_than_days === "number" && a.older_than_days > 0, "older_than_days must be a positive number");
+          if (a.limit !== undefined) assert(typeof a.limit === "number" && a.limit > 0, "limit must be a positive number");
+          result = await reviewStale({ project: a.project, source: a.source, days: a.days, older_than_days: a.older_than_days, limit: a.limit });
           break;
         }
         case "memory_stats": { result = await getStats(); break; }
