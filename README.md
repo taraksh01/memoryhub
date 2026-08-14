@@ -122,18 +122,23 @@ Use scopes to keep memories isolated per repo, per feature, or any other boundar
 | Tool | Description | Scope Support |
 |------|-------------|---------------|
 | `add_memories` | Store text (LLM extracts facts, embeds them). Deduplicates near-duplicates by default. Optional `project`, `source`, `importance` (0–1), `expires_at` (ISO), `dedup` (bool), `threshold` (0–1). Returns per-memory `action`: `inserted` \| `merged` \| `skipped` | Optional `project` |
-| `search_memory` | Semantic search with optional limit; returns full metadata per hit | Optional `project` filter |
-| `list_memories` | List memories with pagination (`limit`, `offset` as cursor from `next_offset`); returns full metadata | Optional `project` filter |
+| `batch_add_memories` | Add multiple texts in one call (`items: [{text, project?, source?, importance?, expires_at?, dedup?, threshold?}]`). Per-item outcomes; item-level failures don't abort the batch | Optional `project` per item |
+| `search_memory` | Semantic search with optional limit; returns full metadata per hit. Filter by `project` and/or `source`; set `exact: true` to match the query text verbatim instead of by similarity | Optional `project` / `source` filter |
+| `list_memories` | List memories with pagination (`limit`, `offset` as cursor from `next_offset`); filter by `project` and/or `source`; returns full metadata | Optional `project` / `source` filter |
 | `get_memory` | Get a single memory by ID (full metadata) | — |
+| `get_memories` | Get multiple memories by IDs | — |
 | `update_memory` | Update a memory's text (re-embeds); optional `source`, `importance`, `expires_at` | — |
 | `delete_memories` | Delete specific memories by IDs | — |
 | `delete_all_memories` | Delete ALL memories (or filter by project) | Optional `project` filter, returns count |
+| `export_memories` | Export memories as JSON (`{exported_at, count, memories}`) for backup/migration; optional `project` / `source` filters | Optional `project` / `source` filter |
+| `import_memories` | Import export JSON (array or `{memories: [...]}`). Texts are re-embedded on import; original IDs and metadata are preserved | — |
+| `review_stale` | Report-only audit: buckets for expired, expiring soon (`days`, default 7), and older than `older_than_days` (default 90). Optional `project` / `source` / `limit`. Never modifies data | Optional `project` / `source` filter |
 | `memory_stats` | Collection statistics: totals, `by_project`, `by_source`, `expired`, `expiring_soon_7d`, `avg_age_days`, `oldest/newest_created_at`, `size_bytes` (estimate) | — |
 | `get_config` | Show current runtime configuration (API keys masked) | — |
 | `update_config` | Update a config value at runtime; set `persist: true` to write it atomically to the config file | — |
 | `health_check` | Check connectivity to Qdrant | — |
 
-Every memory stores `created_at`, `updated_at`, and (when provided) `project`, `source`, `expires_at`, `importance`; all read tools return these fields.
+Every memory stores `created_at`, `updated_at`, and (when provided) `project`, `source`, `expires_at`, `importance`; all read tools return these fields. Memory IDs must be UUIDs (or numeric strings) — invalid IDs are rejected with a validation error before hitting Qdrant.
 
 > Config changes via `update_config` are in-memory only unless `persist: true` is passed (writes to `~/.memoryhub/config.json` atomically, survives restart).
 
