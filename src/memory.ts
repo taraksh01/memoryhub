@@ -224,7 +224,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function validateMetadata(opts: { source?: string; importance?: number; expires_at?: string }): void {
+function validateMetadata(opts: { source?: string; importance?: number; expires_at?: string; threshold?: number; dedup?: boolean }): void {
   if (opts.source !== undefined && (typeof opts.source !== "string" || !opts.source.trim())) {
     throw new Error("source must be a non-empty string");
   }
@@ -237,6 +237,14 @@ function validateMetadata(opts: { source?: string; importance?: number; expires_
     if (typeof opts.expires_at !== "string" || isNaN(Date.parse(opts.expires_at))) {
       throw new Error("expires_at must be a valid ISO date string");
     }
+  }
+  if (opts.threshold !== undefined) {
+    if (typeof opts.threshold !== "number" || isNaN(opts.threshold) || opts.threshold <= 0 || opts.threshold >= 1) {
+      throw new Error("threshold must be a number between 0 and 1");
+    }
+  }
+  if (opts.dedup !== undefined && typeof opts.dedup !== "boolean") {
+    throw new Error("dedup must be a boolean");
   }
 }
 
@@ -279,10 +287,9 @@ export function decideAction(score: number, threshold: number, skipThreshold: nu
 export function mergeTexts(oldText: string, newText: string): string {
   const seen = new Set<string>();
   const parts: string[] = [];
-  for (const raw of `${oldText.trim()} ${newText.trim()}`.split(/(?<=[.!?])\s+/)) {
-    const part = raw.trim();
-    if (!part) continue;
-    const key = part.toLowerCase();
+  const sentences = (s: string): string[] => s.trim().split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter((x) => x.length > 0);
+  for (const part of [...sentences(oldText), ...sentences(newText)]) {
+    const key = part.toLowerCase().replace(/[.!?]+$/, "");
     if (seen.has(key)) continue;
     seen.add(key);
     parts.push(part);
@@ -310,13 +317,31 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: nu
   return results;
 }
 
-const projectLocks = new Map<string, Promise<void>>();
+interface ProjectLock {
+  promise: Promise<void>;
+  settled: boolean;
+}
+
+const projectLocks = new Map<string, ProjectLock>();
+const MAX_PROJECT_LOCKS = 1000;
 
 async function withProjectLock(project: string, fn: () => Promise<void>): Promise<void> {
-  const prev = projectLocks.get(project) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  projectLocks.set(project, next.then(() => {}, () => {}));
-  await next;
+  const prev = projectLocks.get(project)?.promise ?? Promise.resolve();
+  const entry: ProjectLock = {
+    promise: prev.then(fn, fn).finally(() => { entry.settled = true; }),
+    settled: false,
+  };
+  projectLocks.set(project, entry);
+  try {
+    await entry.promise;
+  } finally {
+    if (projectLocks.size > MAX_PROJECT_LOCKS) {
+      for (const [k, e] of projectLocks) {
+        if (projectLocks.size <= MAX_PROJECT_LOCKS) break;
+        if (e.settled) projectLocks.delete(k);
+      }
+    }
+  }
 }
 
 export async function addMemoriesRaw(text: string, project?: string, opts: AddOptions = {}): Promise<{ added: number; merged: number; skipped: number; memories: AddOutcome[] }> {
@@ -567,7 +592,7 @@ export async function deleteMemories(ids: string[]) {
 
 export async function deleteAllMemories(project?: string) {
   const filter = project ? { must: [{ key: "project", match: { value: project } }] } : {};
-  const countResp = await qdrant().count(getConfig("COLLECTION"), { filter });
+  const countResp = await qdrant().count(getConfig("COLLECTION"), { filter, exact: true });
   await qdrant().delete(getConfig("COLLECTION"), { filter, wait: true });
   return JSON.stringify({ deleted: countResp.count ?? 0 });
 }
