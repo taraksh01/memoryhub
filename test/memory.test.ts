@@ -196,3 +196,21 @@ test("toRecord defaults for missing metadata", () => {
   const rec = mem.toRecord({ id: "1", payload: { text: "only text" } });
   assert.deepEqual(rec, { id: "1", text: "only text" });
 });
+
+test("batchAddMemories rejects an empty items array", async () => {
+  await assert.rejects(mem.batchAddMemories([]), /items must be a non-empty array/);
+});
+
+test("importMemories rejects invalid JSON", async () => {
+  await assert.rejects(mem.importMemories("not json"), /data must be valid JSON/);
+});
+
+test("importMemories rejects non-array shapes", async () => {
+  await assert.rejects(mem.importMemories("{}"), /array of memories or an export envelope/);
+  await assert.rejects(mem.importMemories('{"foo": 1}'), /array of memories or an export envelope/);
+});
+
+test("importMemories rejects oversized imports", async () => {
+  const big = JSON.stringify({ memories: Array.from({ length: 10001 }, (_, i) => ({ text: `m${i}` })) });
+  await assert.rejects(mem.importMemories(big), /Too many items/);
+});

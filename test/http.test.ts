@@ -99,12 +99,17 @@ test("POST /mcp initializes a session over SSE", async () => {
   assert.equal(result.protocolVersion, "2025-06-18");
 });
 
-test("POST /mcp tools/list returns all 11 tools", async () => {
+test("POST /mcp tools/list returns all 16 tools", async () => {
   const { sessionId } = await initialize();
   const { message } = await mcpPost(sessionId, JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }));
   const names = message.result.tools.map((t: { name: string }) => t.name);
-  assert.equal(names.length, 11);
+  assert.equal(names.length, 16);
   assert.ok(names.includes("add_memories"));
+  assert.ok(names.includes("batch_add_memories"));
+  assert.ok(names.includes("get_memories"));
+  assert.ok(names.includes("export_memories"));
+  assert.ok(names.includes("import_memories"));
+  assert.ok(names.includes("review_stale"));
   assert.ok(names.includes("health_check"));
 });
 
@@ -169,6 +174,8 @@ test("tools/call rejects empty-string project on all project-aware tools", async
     { name: "search_memory", arguments: { query: "x", project: "" } },
     { name: "list_memories", arguments: { project: "" } },
     { name: "delete_all_memories", arguments: { project: "" } },
+    { name: "export_memories", arguments: { project: "" } },
+    { name: "review_stale", arguments: { project: "" } },
   ];
   for (let i = 0; i < calls.length; i++) {
     const { message } = await mcpPost(sessionId, JSON.stringify({
@@ -182,6 +189,147 @@ test("tools/call rejects empty-string project on all project-aware tools", async
     assert.equal(text.code, "VALIDATION_ERROR", `${calls[i].name} code`);
     assert.match(text.error, /project must be a non-empty string/, `${calls[i].name} message`);
   }
+});
+
+test("new tools reject invalid arguments", async () => {
+  const { sessionId } = await initialize();
+  const calls = [
+    { name: "batch_add_memories", arguments: { items: [] } },
+    { name: "batch_add_memories", arguments: { items: [{}] } },
+    { name: "get_memories", arguments: { ids: [] } },
+    { name: "get_memories", arguments: { ids: ["not-a-uuid"] } },
+    { name: "get_memory", arguments: { memory_id: "not-a-uuid" } },
+    { name: "delete_memories", arguments: { ids: ["not-a-uuid"] } },
+    { name: "import_memories", arguments: {} },
+    { name: "review_stale", arguments: { days: 0 } },
+    { name: "search_memory", arguments: { query: "x", exact: "yes" } },
+  ];
+  for (let i = 0; i < calls.length; i++) {
+    const { message } = await mcpPost(sessionId, JSON.stringify({
+      jsonrpc: "2.0",
+      id: 50 + i,
+      method: "tools/call",
+      params: { name: calls[i].name, arguments: calls[i].arguments },
+    }));
+    assert.equal(message.result.isError, true, `${calls[i].name} should fail`);
+    const text = JSON.parse(message.result.content[0].text);
+    assert.equal(text.code, "VALIDATION_ERROR", `${calls[i].name} code`);
+  }
+});
+
+test("batch_add_memories processes all items with per-item outcomes", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  setConfig("EMBED_MODEL", "text-embedding-3-small");
+  setConfig("EMBED_BASE", "http://embed.test:1");
+  setConfig("EMBED_KEY", "k");
+  setConfig("LLM_MODEL", "gpt-4o-mini");
+  setConfig("LLM_BASE", "http://llm.test:1");
+  setConfig("LLM_KEY", "k");
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/chat/completions")) {
+      return new Response(JSON.stringify({ choices: [{ message: { content: '["fact one"]' } }] }), { status: 200 });
+    }
+    if (u.includes("/embeddings")) {
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+    });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 60,
+    method: "tools/call",
+    params: { name: "batch_add_memories", arguments: { items: [{ text: "one", project: "p1" }, { text: "two", project: "p2" }] } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.processed, 2);
+  assert.equal(text.items.length, 2);
+  assert.equal(text.items[0].index, 0);
+  assert.equal(text.items[0].added, 1);
+  assert.equal(text.items[1].index, 1);
+  assert.equal(text.items[1].added, 1);
+  assert.equal(text.items[0].memories[0].action, "inserted");
+});
+
+test("export_memories returns an export envelope", async (t) => {
+  const { sessionId } = await initialize();
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    return new Response(JSON.stringify({ result: { points: [], next_page_offset: null } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+    });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 61,
+    method: "tools/call",
+    params: { name: "export_memories", arguments: {} },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.ok(text.exported_at);
+  assert.equal(text.count, 0);
+  assert.deepEqual(text.memories, []);
+});
+
+test("import_memories imports valid export data", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("EMBED_MODEL", "text-embedding-3-small");
+  setConfig("EMBED_BASE", "http://embed.test:1");
+  setConfig("EMBED_KEY", "k");
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/embeddings")) {
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+    });
+  });
+  const data = JSON.stringify({ memories: [{ id: "keep-me", text: "hello", project: "p", importance: 0.5 }] });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 62,
+    method: "tools/call",
+    params: { name: "import_memories", arguments: { data } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.imported, 1);
+  assert.deepEqual(text.failed, []);
+});
+
+test("review_stale returns a report without touching data", async (t) => {
+  const { sessionId } = await initialize();
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    return new Response(JSON.stringify({ result: { points: [], next_page_offset: null } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+    });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 63,
+    method: "tools/call",
+    params: { name: "review_stale", arguments: { days: 3 } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.report_only, true);
+  assert.equal(text.checked, 0);
+  assert.equal(text.buckets.expired.count, 0);
 });
 
 test("update_config masks secret values in the response", async () => {
