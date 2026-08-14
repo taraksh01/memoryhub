@@ -8,7 +8,7 @@ const KEYS = [
   "MEMORYHUB_DIR", "MEMORYHUB_CONFIG", "QDRANT_URL", "MEMORYHUB_COLLECTION",
   "MEMORYHUB_VECTOR_SIZE", "MEMORYHUB_RETRY_DELAY_MS", "LLM_MODEL", "LLM_BASE",
   "LLM_BASE_URL", "LLM_KEY", "LLM_API_KEY", "EMBED_MODEL", "EMBED_BASE",
-  "EMBED_BASE_URL", "EMBED_KEY", "EMBED_API_KEY",
+  "EMBED_BASE_URL", "EMBED_KEY", "EMBED_API_KEY", "MEMORYHUB_API_TOKEN",
 ];
 
 type ConfigModule = typeof import("../src/config.ts");
@@ -229,6 +229,38 @@ test("persistConfig writes the key to the config file atomically", async () => {
   assert.deepEqual(onDisk, { llm: { model: "gpt-persisted" } });
   assert.equal(c.getConfig("LLM_MODEL"), "gpt-persisted");
   assert.ok(!existsSync(`${file}.tmp-`), "no temp file left behind");
+});
+
+test("persistConfig writes the config file with 0600 permissions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const file = join(dir, "config.json");
+  const c = await freshConfig({ MEMORYHUB_DIR: dir, MEMORYHUB_CONFIG: file });
+  c.persistConfig("LLM_KEY", "very-secret-persisted-key");
+  const mode = Number((await import("node:fs")).statSync(file).mode & 0o777);
+  assert.equal(mode, 0o600);
+});
+
+test("persistConfig writes to the active config source when it differs from the default path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const active = join(dir, "active.json");
+  const c = await freshConfig({ MEMORYHUB_DIR: dir, MEMORYHUB_CONFIG: active });
+  c.persistConfig("COLLECTION", "active-col");
+  assert.equal(c.persistConfig("RETRY_DELAY_MS", "250"), active);
+  const onDisk = JSON.parse(readFileSync(active, "utf-8"));
+  assert.equal(onDisk.collection, "active-col");
+  assert.equal(onDisk.retry_delay_ms, 250);
+  assert.equal(c.getConfig("RETRY_DELAY_MS"), "250");
+});
+
+test("API_TOKEN is read from env and config file, and masked", async () => {
+  const c1 = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_API_TOKEN: "env-token-12345678" });
+  assert.equal(c1.getConfig("API_TOKEN"), "env-token-12345678");
+  assert.equal(c1.getAllConfig().API_TOKEN, "env-****5678");
+  const file = tempConfigFile({ api_token: "file-token-12345678" });
+  const c2 = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  assert.equal(c2.getConfig("API_TOKEN"), "file-token-12345678");
+  c2.persistConfig("API_TOKEN", "persisted-token-12345678");
+  assert.equal(c2.getConfig("API_TOKEN"), "persisted-token-12345678");
 });
 
 test("persistConfig merges into an existing config file", async () => {
