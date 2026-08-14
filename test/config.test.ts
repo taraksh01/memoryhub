@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,6 +37,9 @@ test("defaults when no env or config set", async () => {
   assert.equal(Number(c.getConfig("VECTOR_SIZE")), 768);
   assert.equal(c.getConfig("LLM_MODEL"), "");
   assert.equal(Number(c.getConfig("RETRY_DELAY_MS")), 1000);
+  assert.equal(c.getConfig("DEDUP_ENABLED"), "true");
+  assert.equal(c.getConfig("DEDUP_THRESHOLD"), "0.85");
+  assert.equal(c.getConfig("DEDUP_SKIP_THRESHOLD"), "0.99");
 });
 
 test("env vars take precedence over config file", async () => {
@@ -185,6 +188,89 @@ test("retry_delay_ms is read from config file", async () => {
   const file = tempConfigFile({ retry_delay_ms: 42 });
   const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
   assert.equal(c.getConfig("RETRY_DELAY_MS"), "42");
+});
+
+test("dedup settings are read from config file", async () => {
+  const file = tempConfigFile({ dedup: { enabled: false, threshold: 0.9, skip_threshold: 0.97 } });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  assert.equal(c.getConfig("DEDUP_ENABLED"), "false");
+  assert.equal(c.getConfig("DEDUP_THRESHOLD"), "0.9");
+  assert.equal(c.getConfig("DEDUP_SKIP_THRESHOLD"), "0.97");
+});
+
+test("MEMORYHUB_DEDUP_* env vars override config file", async () => {
+  const file = tempConfigFile({ dedup: { threshold: 0.9 } });
+  const c = await freshConfig({
+    MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")),
+    MEMORYHUB_CONFIG: file,
+    MEMORYHUB_DEDUP_THRESHOLD: "0.75",
+  });
+  assert.equal(c.getConfig("DEDUP_THRESHOLD"), "0.75");
+});
+
+test("setConfig validates dedup keys", async () => {
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")) });
+  assert.throws(() => c.setConfig("DEDUP_ENABLED", "yes"), /DEDUP_ENABLED must be "true" or "false"/);
+  assert.doesNotThrow(() => c.setConfig("DEDUP_ENABLED", "false"));
+  assert.throws(() => c.setConfig("DEDUP_THRESHOLD", "1.5"), /DEDUP_THRESHOLD must be a number between 0 and 1/);
+  assert.throws(() => c.setConfig("DEDUP_THRESHOLD", "0"), /DEDUP_THRESHOLD must be a number between 0 and 1/);
+  assert.throws(() => c.setConfig("DEDUP_THRESHOLD", "abc"), /DEDUP_THRESHOLD must be a number between 0 and 1/);
+  assert.doesNotThrow(() => c.setConfig("DEDUP_THRESHOLD", "0.85"));
+  assert.throws(() => c.setConfig("DEDUP_SKIP_THRESHOLD", "1"), /DEDUP_SKIP_THRESHOLD must be a number between 0 and 1/);
+});
+
+test("persistConfig writes the key to the config file atomically", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const file = join(dir, "config.json");
+  const c = await freshConfig({ MEMORYHUB_DIR: dir, MEMORYHUB_CONFIG: file });
+  const path = c.persistConfig("LLM_MODEL", "gpt-persisted");
+  assert.equal(path, file);
+  const onDisk = JSON.parse(readFileSync(file, "utf-8"));
+  assert.deepEqual(onDisk, { llm: { model: "gpt-persisted" } });
+  assert.equal(c.getConfig("LLM_MODEL"), "gpt-persisted");
+  assert.ok(!existsSync(`${file}.tmp-`), "no temp file left behind");
+});
+
+test("persistConfig merges into an existing config file", async () => {
+  const file = tempConfigFile({ qdrant: { url: "http://keep:6333" }, llm: { model: "old" } });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  c.persistConfig("LLM_MODEL", "gpt-new");
+  c.persistConfig("RETRY_DELAY_MS", "250");
+  const onDisk = JSON.parse(readFileSync(file, "utf-8"));
+  assert.equal(onDisk.qdrant.url, "http://keep:6333");
+  assert.equal(onDisk.llm.model, "gpt-new");
+  assert.equal(onDisk.retry_delay_ms, 250);
+});
+
+test("persistConfig writes numeric and boolean shapes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const file = join(dir, "config.json");
+  const c = await freshConfig({ MEMORYHUB_DIR: dir, MEMORYHUB_CONFIG: file });
+  c.persistConfig("VECTOR_SIZE", "3072");
+  c.persistConfig("DEDUP_ENABLED", "false");
+  c.persistConfig("DEDUP_THRESHOLD", "0.9");
+  const onDisk = JSON.parse(readFileSync(file, "utf-8"));
+  assert.equal(onDisk.vector_size, 3072);
+  assert.equal(onDisk.dedup.enabled, false);
+  assert.equal(onDisk.dedup.threshold, 0.9);
+});
+
+test("persistConfig rejects unknown keys and bad values", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const file = join(dir, "config.json");
+  const c = await freshConfig({ MEMORYHUB_DIR: dir, MEMORYHUB_CONFIG: file });
+  assert.throws(() => c.persistConfig("BOGUS", "x"), /Unknown config key "BOGUS"/);
+  assert.throws(() => c.persistConfig("QDRANT_URL", "not-a-url"), /QDRANT_URL must be a valid http\(s\) URL/);
+  assert.ok(!existsSync(file), "no file written on failed persist");
+});
+
+test("persistConfig survives reload (hot reload picks it up)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
+  const file = join(dir, "config.json");
+  const c = await freshConfig({ MEMORYHUB_DIR: dir, MEMORYHUB_CONFIG: file });
+  c.persistConfig("COLLECTION", "persisted-col");
+  c.reloadConfig();
+  assert.equal(c.getConfig("COLLECTION"), "persisted-col");
 });
 
 test("unparseable config file warns only once", async () => {
