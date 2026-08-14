@@ -79,6 +79,22 @@ test("extractMemories parses valid JSON array", async (t) => {
   assert.deepEqual(r, ["remember one", "remember two"]);
 });
 
+test("extractMemories trims and drops empty facts", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    chatCompletion(JSON.stringify(["  keep me  ", "", "   ", null]))
+  );
+  const r = await mem.extractMemories("some text");
+  assert.deepEqual(r, ["keep me"]);
+});
+
+test("extractMemories falls back to raw text when only empty facts are returned", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => { calls++; return chatCompletion(JSON.stringify(["", "  "])); });
+  const r = await mem.extractMemories("raw fallback text");
+  assert.deepEqual(r, ["raw fallback text"]);
+  assert.equal(calls, 2);
+});
+
 test("extractMemories strips markdown code fences", async (t) => {
   t.mock.method(globalThis, "fetch", async () =>
     chatCompletion("```json\n[\"only fact\"]\n```")
@@ -173,6 +189,32 @@ test("decideAction: custom thresholds honored", () => {
 test("mergeTexts joins with a single space", () => {
   assert.equal(mem.mergeTexts("first fact", "second fact"), "first fact second fact");
   assert.equal(mem.mergeTexts("  first  ", " second "), "first second");
+});
+
+test("mergeTexts dedupes repeated sentences case-insensitively", () => {
+  assert.equal(
+    mem.mergeTexts("The sky is blue. I like coffee.", "I LIKE COFFEE. The sky is blue."),
+    "The sky is blue. I like coffee."
+  );
+});
+
+test("mergeTexts dedupes repeats that differ only by trailing punctuation", () => {
+  assert.equal(mem.mergeTexts("first fact", "first fact."), "first fact");
+  assert.equal(mem.mergeTexts("first fact!", "FIRST FACT"), "first fact!");
+});
+
+test("addMemoriesRaw rejects invalid threshold and dedup before any API call", async () => {
+  let called = false;
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  const m = mock.method(globalThis, "fetch", async () => { called = true; return originalFetch("http://x"); });
+  try {
+    await assert.rejects(mem.addMemoriesRaw("some text", undefined, { threshold: 0 }), /threshold must be a number between 0 and 1/);
+    await assert.rejects(mem.addMemoriesRaw("some text", undefined, { threshold: 1 }), /threshold must be a number between 0 and 1/);
+    await assert.rejects(mem.addMemoriesRaw("some text", undefined, { dedup: "yes" }), /dedup must be a boolean/);
+    assert.equal(called, false);
+  } finally {
+    m.mock.restore();
+  }
 });
 
 test("toRecord maps payload fields", () => {

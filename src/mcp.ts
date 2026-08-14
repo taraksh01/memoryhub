@@ -17,6 +17,7 @@ interface ToolArgs {
   project?: string;
   source?: string;
   exact?: boolean;
+  min_score?: number;
   importance?: number;
   expires_at?: string;
   dedup?: boolean;
@@ -43,7 +44,7 @@ export function createMcpServer(version: string): Server {
     tools: [
       { name: "add_memories", description: "Store text (LLM extracts facts, embeds, stores). Deduplicates semantically similar memories by default.", inputSchema: { type: "object", properties: { text: { type: "string" }, project: { type: "string" }, source: { type: "string" }, importance: { type: "number" }, expires_at: { type: "string" }, dedup: { type: "boolean" }, threshold: { type: "number" } }, required: ["text"] } },
       { name: "batch_add_memories", description: "Add multiple texts in one call. Each item follows add_memories semantics; results are reported per item and item-level failures do not abort the batch.", inputSchema: { type: "object", properties: { items: { type: "array", items: { type: "object", properties: { text: { type: "string" }, project: { type: "string" }, source: { type: "string" }, importance: { type: "number" }, expires_at: { type: "string" }, dedup: { type: "boolean" }, threshold: { type: "number" } }, required: ["text"] } } }, required: ["items"] } },
-      { name: "search_memory", description: "Semantic search across stored memories. Set exact=true to match the query text verbatim instead of by similarity; filter by project and/or source.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, project: { type: "string" }, source: { type: "string" }, exact: { type: "boolean" } }, required: ["query"] } },
+      { name: "search_memory", description: "Semantic search across stored memories. Set exact=true to match the query text verbatim instead of by similarity; filter by project and/or source; min_score drops hits below a similarity threshold.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, project: { type: "string" }, source: { type: "string" }, exact: { type: "boolean" }, min_score: { type: "number" } }, required: ["query"] } },
       { name: "list_memories", description: "List stored memories with pagination; filter by project and/or source.", inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "string" }, project: { type: "string" }, source: { type: "string" } } } },
       { name: "get_memory", description: "Get a single memory by ID.", inputSchema: { type: "object", properties: { memory_id: { type: "string" } }, required: ["memory_id"] } },
       { name: "get_memories", description: "Get multiple memories by IDs.", inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } }, required: ["ids"] } },
@@ -69,6 +70,8 @@ export function createMcpServer(version: string): Server {
         case "add_memories": {
           assert(typeof a.text === "string" && a.text, "text is required (string)");
           if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
+          if (a.dedup !== undefined) assert(typeof a.dedup === "boolean", "dedup must be a boolean");
+          if (a.threshold !== undefined) assert(typeof a.threshold === "number" && a.threshold > 0 && a.threshold < 1, "threshold must be a number between 0 and 1");
           result = await addMemories(a.text, a.project, {
             source: a.source,
             importance: a.importance,
@@ -80,7 +83,7 @@ export function createMcpServer(version: string): Server {
         }
         case "batch_add_memories": {
           assert(Array.isArray(a.items) && a.items.length > 0, "items must be a non-empty array");
-          assert(a.items.every((it: unknown) => typeof (it as Record<string, unknown>)?.text === "string"), "each item's text must be a non-empty string");
+          assert(a.items.every((it: unknown) => { const t = (it as Record<string, unknown>)?.text; return typeof t === "string" && t.trim() !== ""; }), "each item's text must be a non-empty string");
           result = await batchAddMemories(a.items as { text: string; project?: string; source?: string; importance?: number; expires_at?: string; dedup?: boolean; threshold?: number }[]);
           break;
         }
@@ -90,7 +93,9 @@ export function createMcpServer(version: string): Server {
           if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
           if (a.source !== undefined) assert(typeof a.source === "string" && a.source, "source must be a non-empty string");
           if (a.exact !== undefined) assert(typeof a.exact === "boolean", "exact must be a boolean");
-          result = await searchMemories(a.query, a.limit ?? 10, a.project, { source: a.source, exact: a.exact });
+          if (a.min_score !== undefined) assert(typeof a.min_score === "number" && a.min_score > 0 && a.min_score <= 1, "min_score must be a number between 0 and 1");
+          assert(!(a.exact === true && a.min_score !== undefined), "when exact=true, min_score must be omitted");
+          result = await searchMemories(a.query, a.limit ?? 10, a.project, { source: a.source, exact: a.exact, min_score: a.min_score });
           break;
         }
         case "list_memories": {
@@ -160,11 +165,11 @@ export function createMcpServer(version: string): Server {
           assert(typeof a.value === "string", "value is required (string)");
           if (a.persist === true) {
             const path = persistConfig(a.key, a.value);
-            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" ? mask(a.value) : a.value;
+            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? mask(a.value) : a.value;
             result = JSON.stringify({ updated: a.key, value, persisted: true, path });
           } else {
             setConfig(a.key, a.value);
-            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" ? mask(a.value) : a.value;
+            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? mask(a.value) : a.value;
             result = JSON.stringify({ updated: a.key, value, persisted: false });
           }
           break;

@@ -113,6 +113,42 @@ test("POST /mcp tools/list returns all 16 tools", async () => {
   assert.ok(names.includes("health_check"));
 });
 
+test("POST /mcp requires a bearer token when API_TOKEN is set", async () => {
+  setConfig("API_TOKEN", "sekrit-token-123456");
+  try {
+    const noAuth = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT },
+      body: INIT,
+    });
+    assert.equal(noAuth.status, 401);
+    const badAuth = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT, Authorization: "Bearer wrong-token-123456" },
+      body: INIT,
+    });
+    assert.equal(badAuth.status, 401);
+    const ok = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT, Authorization: "Bearer sekrit-token-123456" },
+      body: INIT,
+    });
+    assert.equal(ok.status, 200);
+  } finally {
+    setConfig("API_TOKEN", "");
+  }
+});
+
+test("POST /mcp rejects oversized request bodies with 413", async () => {
+  const huge = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { data: "x".repeat(6 * 1024 * 1024) } });
+  const res = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: ACCEPT, "Content-Length": String(huge.length) },
+    body: huge,
+  });
+  assert.equal(res.status, 413);
+});
+
 test("POST /mcp tools/call add_memories stores a memory", async (t) => {
   const { sessionId } = await initialize();
   setConfig("QDRANT_URL", "http://qdrant.test:6333");
@@ -203,6 +239,13 @@ test("new tools reject invalid arguments", async () => {
     { name: "import_memories", arguments: {} },
     { name: "review_stale", arguments: { days: 0 } },
     { name: "search_memory", arguments: { query: "x", exact: "yes" } },
+    { name: "search_memory", arguments: { query: "x", min_score: 1.5 } },
+    { name: "search_memory", arguments: { query: "x", min_score: -0.1 } },
+    { name: "search_memory", arguments: { query: "x", exact: true, min_score: 0.5 } },
+    { name: "batch_add_memories", arguments: { items: [{ text: "" }] } },
+    { name: "add_memories", arguments: { text: "x", threshold: 0 } },
+    { name: "add_memories", arguments: { text: "x", threshold: 1 } },
+    { name: "add_memories", arguments: { text: "x", dedup: "yes" } },
   ];
   for (let i = 0; i < calls.length; i++) {
     const { message } = await mcpPost(sessionId, JSON.stringify({
@@ -332,6 +375,73 @@ test("review_stale returns a report without touching data", async (t) => {
   assert.equal(text.buckets.expired.count, 0);
 });
 
+test("review_stale reports exact counts even when the memories list is capped by limit", async (t) => {
+  const { sessionId } = await initialize();
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  const past = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+  const page = (n: number) => Array.from({ length: n }, (_, i) => ({
+    id: `id-${i}`,
+    payload: { text: `expired fact ${i}`, expires_at: past, created_at: past },
+  }));
+  let scrollCalls = 0;
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/points/scroll")) {
+      scrollCalls++;
+      if (scrollCalls === 1) {
+        return new Response(JSON.stringify({ result: { points: page(50), next_page_offset: "page2" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+        });
+      }
+      return new Response(JSON.stringify({ result: { points: page(10), next_page_offset: null } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    return new Response(JSON.stringify({ result: {} }), { status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" } });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 64,
+    method: "tools/call",
+    params: { name: "review_stale", arguments: { limit: 10 } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.checked, 60);
+  assert.equal(text.buckets.expired.count, 60);
+  assert.equal(text.buckets.expired.memories.length, 10);
+});
+
+test("list_memories requests newest-first ordering by created_at", async (t) => {
+  const { sessionId } = await initialize();
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  let scrollBody: any = null;
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/points/scroll")) {
+      scrollBody = init?.body ? JSON.parse(String(init.body)) : null;
+      return new Response(JSON.stringify({ result: { points: [], next_page_offset: null } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    return new Response(JSON.stringify({ result: {} }), { status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" } });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 65,
+    method: "tools/call",
+    params: { name: "list_memories", arguments: { limit: 5 } },
+  }));
+  assert.ok(scrollBody, "scroll request body captured");
+  assert.deepEqual(scrollBody.order_by, { key: "created_at", direction: "desc" });
+  const text = JSON.parse(message.result.content[0].text);
+  assert.deepEqual(text.memories, []);
+});
+
 test("update_config masks secret values in the response", async () => {
   const { sessionId } = await initialize();
   const { message } = await mcpPost(sessionId, JSON.stringify({
@@ -343,6 +453,23 @@ test("update_config masks secret values in the response", async () => {
   const text = JSON.parse(message.result.content[0].text);
   assert.equal(text.updated, "LLM_KEY");
   assert.equal(text.value, "sk-s****1234");
+});
+
+test("update_config masks API_TOKEN in the response", async () => {
+  const { sessionId } = await initialize();
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 32,
+    method: "tools/call",
+    params: { name: "update_config", arguments: { key: "API_TOKEN", value: "sekrit-token-123456" } },
+  }));
+  try {
+    const text = JSON.parse(message.result.content[0].text);
+    assert.equal(text.updated, "API_TOKEN");
+    assert.equal(text.value, "sekr****3456");
+  } finally {
+    setConfig("API_TOKEN", "");
+  }
 });
 
 test("DELETE /mcp closes the session", async () => {

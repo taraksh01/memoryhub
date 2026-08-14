@@ -118,11 +118,16 @@ export async function extractMemories(text: string): Promise<string[]> {
         lastError = `invalid JSON: ${cleaned.slice(0, 200)}`;
         continue;
       }
-      if (!Array.isArray(parsed) || !parsed.every(f => typeof f === "string")) {
+      if (!Array.isArray(parsed)) {
         lastError = `non-array: ${cleaned.slice(0, 200)}`;
         continue;
       }
-      return parsed;
+      const facts = parsed.filter((f): f is string => typeof f === "string").map(f => f.trim()).filter(f => f.length > 0);
+      if (!facts.length) {
+        lastError = "empty facts: " + cleaned.slice(0, 200);
+        continue;
+      }
+      return facts;
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);
     }
@@ -140,6 +145,21 @@ function vectorSize(info: Awaited<ReturnType<QdrantClient["getCollection"]>>): n
     if (typeof s === "number") return s;
   }
   return undefined;
+}
+
+async function ensurePayloadIndexes(colName: string): Promise<void> {
+  const defs = [
+    { field_name: "created_at", field_schema: "integer" as const },
+    { field_name: "project", field_schema: "keyword" as const },
+    { field_name: "source", field_schema: "keyword" as const },
+  ];
+  for (const d of defs) {
+    try {
+      await qdrant().createPayloadIndex(colName, d);
+    } catch {
+      // index already exists or collection not ready — best effort
+    }
+  }
 }
 
 export async function ensureCollection() {
@@ -161,6 +181,7 @@ export async function ensureCollection() {
       );
     }
   }
+  await ensurePayloadIndexes(colName);
 }
 
 const MAX_INPUT = 50_000;
@@ -203,7 +224,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function validateMetadata(opts: { source?: string; importance?: number; expires_at?: string }): void {
+function validateMetadata(opts: { source?: string; importance?: number; expires_at?: string; threshold?: number; dedup?: boolean }): void {
   if (opts.source !== undefined && (typeof opts.source !== "string" || !opts.source.trim())) {
     throw new Error("source must be a non-empty string");
   }
@@ -216,6 +237,14 @@ function validateMetadata(opts: { source?: string; importance?: number; expires_
     if (typeof opts.expires_at !== "string" || isNaN(Date.parse(opts.expires_at))) {
       throw new Error("expires_at must be a valid ISO date string");
     }
+  }
+  if (opts.threshold !== undefined) {
+    if (typeof opts.threshold !== "number" || isNaN(opts.threshold) || opts.threshold <= 0 || opts.threshold >= 1) {
+      throw new Error("threshold must be a number between 0 and 1");
+    }
+  }
+  if (opts.dedup !== undefined && typeof opts.dedup !== "boolean") {
+    throw new Error("dedup must be a boolean");
   }
 }
 
@@ -256,7 +285,16 @@ export function decideAction(score: number, threshold: number, skipThreshold: nu
 }
 
 export function mergeTexts(oldText: string, newText: string): string {
-  return `${oldText.trim()} ${newText.trim()}`.trim();
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  const sentences = (s: string): string[] => s.trim().split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter((x) => x.length > 0);
+  for (const part of [...sentences(oldText), ...sentences(newText)]) {
+    const key = part.toLowerCase().replace(/[.!?]+$/, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parts.push(part);
+  }
+  return parts.join(" ");
 }
 
 async function findDuplicate(fact: string, vector: number[], project?: string): Promise<{ id: string; text: string; score: number } | null> {
@@ -279,6 +317,33 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: nu
   return results;
 }
 
+interface ProjectLock {
+  promise: Promise<void>;
+  settled: boolean;
+}
+
+const projectLocks = new Map<string, ProjectLock>();
+const MAX_PROJECT_LOCKS = 1000;
+
+async function withProjectLock(project: string, fn: () => Promise<void>): Promise<void> {
+  const prev = projectLocks.get(project)?.promise ?? Promise.resolve();
+  const entry: ProjectLock = {
+    promise: prev.then(fn, fn).finally(() => { entry.settled = true; }),
+    settled: false,
+  };
+  projectLocks.set(project, entry);
+  try {
+    await entry.promise;
+  } finally {
+    if (projectLocks.size > MAX_PROJECT_LOCKS) {
+      for (const [k, e] of projectLocks) {
+        if (projectLocks.size <= MAX_PROJECT_LOCKS) break;
+        if (e.settled) projectLocks.delete(k);
+      }
+    }
+  }
+}
+
 export async function addMemoriesRaw(text: string, project?: string, opts: AddOptions = {}): Promise<{ added: number; merged: number; skipped: number; memories: AddOutcome[] }> {
   if (text.length > MAX_INPUT) throw new Error(`Input too long (${text.length} chars, max ${MAX_INPUT})`);
   validateMetadata(opts);
@@ -292,40 +357,44 @@ export async function addMemoriesRaw(text: string, project?: string, opts: AddOp
   const outcomes: AddOutcome[] = [];
   await mapLimit(facts, EMBED_CONCURRENCY, async (fact) => {
     const vector = await embed(fact);
-    if (dedupEnabled) {
-      const dup = await findDuplicate(fact, vector, project);
-      if (dup) {
-        const action = decideAction(dup.score, threshold, skipThreshold);
-        if (action === "skipped") {
-          outcomes.push({ id: dup.id, text: fact, action });
+    const run = async () => {
+      if (dedupEnabled) {
+        const dup = await findDuplicate(fact, vector, project);
+        if (dup) {
+          const action = decideAction(dup.score, threshold, skipThreshold);
+          if (action === "skipped") {
+            outcomes.push({ id: dup.id, text: fact, action });
+            return;
+          }
+          if (action === "merged") {
+            const mergedText = mergeTexts(dup.text, fact);
+          const mergedVector = await embed(mergedText);
+          const existing = await qdrant().retrieve(getConfig("COLLECTION"), { ids: [dup.id], with_payload: true });
+          const oldPayload = (existing[0]?.payload ?? {}) as Record<string, unknown>;
+          const payload: Record<string, unknown> = {
+            ...basePayload(opts, now),
+            text: mergedText,
+            created_at: typeof oldPayload.created_at === "string" ? oldPayload.created_at : now,
+          };
+          if (oldPayload.project !== undefined) payload.project = oldPayload.project;
+          else if (project) payload.project = project;
+          if (typeof oldPayload.source === "string") payload.source = oldPayload.source;
+          if (oldPayload.importance !== undefined) payload.importance = oldPayload.importance;
+          if (typeof oldPayload.expires_at === "string") payload.expires_at = oldPayload.expires_at;
+          await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id: dup.id, vector: mergedVector, payload }], wait: true });
+          outcomes.push({ id: dup.id, text: mergedText, action: "merged" });
           return;
         }
-        if (action === "merged") {
-          const mergedText = mergeTexts(dup.text, fact);
-        const mergedVector = await embed(mergedText);
-        const existing = await qdrant().retrieve(getConfig("COLLECTION"), { ids: [dup.id], with_payload: true });
-        const oldPayload = (existing[0]?.payload ?? {}) as Record<string, unknown>;
-        const payload: Record<string, unknown> = {
-          ...basePayload(opts, now),
-          text: mergedText,
-          created_at: typeof oldPayload.created_at === "string" ? oldPayload.created_at : now,
-        };
-        if (oldPayload.project !== undefined) payload.project = oldPayload.project;
-        else if (project) payload.project = project;
-        if (typeof oldPayload.source === "string") payload.source = oldPayload.source;
-        if (oldPayload.importance !== undefined) payload.importance = oldPayload.importance;
-        if (typeof oldPayload.expires_at === "string") payload.expires_at = oldPayload.expires_at;
-        await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id: dup.id, vector: mergedVector, payload }], wait: true });
-        outcomes.push({ id: dup.id, text: mergedText, action: "merged" });
-        return;
       }
-    }
-    const payload: Record<string, unknown> = { ...basePayload(opts, now), text: fact };
-    if (project) payload.project = project;
-    const id = randomUUID();
-    await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id, vector, payload }], wait: true });
-    outcomes.push({ id, text: fact, action: "inserted" });
-    }
+      const payload: Record<string, unknown> = { ...basePayload(opts, now), text: fact };
+      if (project) payload.project = project;
+      const id = randomUUID();
+      await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id, vector, payload }], wait: true });
+      outcomes.push({ id, text: fact, action: "inserted" });
+      }
+    };
+    if (dedupEnabled) await withProjectLock(project ?? "", run);
+    else await run();
   });
 
   const added = outcomes.filter((o) => o.action === "inserted").length;
@@ -354,7 +423,7 @@ const MAX_BATCH_ITEMS = 100;
 export async function batchAddMemories(items: BatchItem[]) {
   if (!items.length) throw new Error("items must be a non-empty array");
   if (items.length > MAX_BATCH_ITEMS) throw new Error(`Too many items (${items.length}, max ${MAX_BATCH_ITEMS})`);
-  const results: Record<string, unknown>[] = [];
+  const results: (Record<string, unknown> | undefined)[] = new Array(items.length);
   await mapLimit(items, BATCH_CONCURRENCY, async (item, index) => {
     try {
       const r = await addMemoriesRaw(item.text, item.project, {
@@ -364,9 +433,9 @@ export async function batchAddMemories(items: BatchItem[]) {
         dedup: item.dedup,
         threshold: item.threshold,
       });
-      results.push({ index, ...r });
+      results[index] = { index, ...r };
     } catch (e) {
-      results.push({ index, error: e instanceof Error ? e.message : String(e) });
+      results[index] = { index, error: e instanceof Error ? e.message : String(e) };
     }
   });
   return JSON.stringify({ processed: items.length, items: results }, null, 2);
@@ -454,6 +523,7 @@ export async function getMemories(ids: string[]) {
 export interface SearchOptions {
   source?: string;
   exact?: boolean;
+  min_score?: number;
 }
 
 export async function searchMemories(query: string, limit: number = 10, project?: string, opts: SearchOptions = {}) {
@@ -467,12 +537,20 @@ export async function searchMemories(query: string, limit: number = 10, project?
   requireEmbedConfig();
   const vector = await embed(query);
   const r = await qdrant().query(getConfig("COLLECTION"), { query: vector, limit: capped, with_payload: true, filter });
-  return JSON.stringify(r.points.map((p) => ({ ...toRecord(p), score: p.score })), null, 2);
+  const minScore = opts.min_score;
+  const points = minScore !== undefined ? r.points.filter((p) => (p.score ?? 0) >= minScore) : r.points;
+  return JSON.stringify(points.map((p) => ({ ...toRecord(p), score: p.score })), null, 2);
 }
 
 export async function listMemories(limit: number = 100, offset?: string, project?: string, source?: string) {
   const capped = Math.min(Math.max(1, limit), MAX_LIST_LIMIT);
-  const r = await qdrant().scroll(getConfig("COLLECTION"), { limit: capped, offset, with_payload: true, filter: payloadFilter(project, source) });
+  const r = await qdrant().scroll(getConfig("COLLECTION"), {
+    limit: capped,
+    offset,
+    with_payload: true,
+    filter: payloadFilter(project, source),
+    order_by: { key: "created_at", direction: "desc" },
+  });
   return JSON.stringify({ memories: r.points.map((p) => toRecord(p)), next_offset: r.next_page_offset }, null, 2);
 }
 
@@ -507,13 +585,14 @@ export async function updateMemory(memory_id: string, text: string, opts: Update
 }
 
 export async function deleteMemories(ids: string[]) {
+  const found = await qdrant().retrieve(getConfig("COLLECTION"), { ids, with_payload: false });
   await qdrant().delete(getConfig("COLLECTION"), { points: ids, wait: true });
-  return JSON.stringify({ deleted: ids.length });
+  return JSON.stringify({ deleted: found.length });
 }
 
 export async function deleteAllMemories(project?: string) {
   const filter = project ? { must: [{ key: "project", match: { value: project } }] } : {};
-  const countResp = await qdrant().count(getConfig("COLLECTION"), { filter });
+  const countResp = await qdrant().count(getConfig("COLLECTION"), { filter, exact: true });
   await qdrant().delete(getConfig("COLLECTION"), { filter, wait: true });
   return JSON.stringify({ deleted: countResp.count ?? 0 });
 }
@@ -597,6 +676,9 @@ export async function reviewStale(opts: ReviewStaleOptions = {}) {
   const expired: Record<string, unknown>[] = [];
   const expiringSoon: Record<string, unknown>[] = [];
   const olderThan: Record<string, unknown>[] = [];
+  let expiredTotal = 0;
+  let expiringTotal = 0;
+  let olderTotal = 0;
   let checked = 0;
 
   let offset: string | number | Record<string, unknown> | null | undefined;
@@ -608,15 +690,24 @@ export async function reviewStale(opts: ReviewStaleOptions = {}) {
       const preview = rec.text.length > 120 ? rec.text.slice(0, 120) + "..." : rec.text;
       const expires = rec.expires_at ? Date.parse(rec.expires_at) : NaN;
       if (!isNaN(expires)) {
-        if (expires <= now && expired.length < limit) {
-          expired.push({ id: rec.id, text: preview, expires_at: rec.expires_at, days_overdue: Math.floor((now - expires) / dayMs) });
-        } else if (expires > now && expires - now <= days * dayMs && expiringSoon.length < limit) {
-          expiringSoon.push({ id: rec.id, text: preview, expires_at: rec.expires_at, days_left: Math.ceil((expires - now) / dayMs) });
+        if (expires <= now) {
+          expiredTotal++;
+          if (expired.length < limit) {
+            expired.push({ id: rec.id, text: preview, expires_at: rec.expires_at, days_overdue: Math.floor((now - expires) / dayMs) });
+          }
+        } else if (expires - now <= days * dayMs) {
+          expiringTotal++;
+          if (expiringSoon.length < limit) {
+            expiringSoon.push({ id: rec.id, text: preview, expires_at: rec.expires_at, days_left: Math.ceil((expires - now) / dayMs) });
+          }
         }
       }
       const created = rec.created_at ? Date.parse(rec.created_at) : NaN;
-      if (!isNaN(created) && now - created > olderThanDays * dayMs && olderThan.length < limit) {
-        olderThan.push({ id: rec.id, text: preview, created_at: rec.created_at, age_days: Math.floor((now - created) / dayMs) });
+      if (!isNaN(created) && now - created > olderThanDays * dayMs) {
+        olderTotal++;
+        if (olderThan.length < limit) {
+          olderThan.push({ id: rec.id, text: preview, created_at: rec.created_at, age_days: Math.floor((now - created) / dayMs) });
+        }
       }
     }
     offset = page.next_page_offset;
@@ -626,11 +717,11 @@ export async function reviewStale(opts: ReviewStaleOptions = {}) {
     report_only: true,
     checked,
     buckets: {
-      expired: { count: expired.length, memories: expired },
-      [`expiring_soon_${days}d`]: { count: expiringSoon.length, memories: expiringSoon },
-      [`older_than_${olderThanDays}d`]: { count: olderThan.length, memories: olderThan },
+      expired: { count: expiredTotal, memories: expired },
+      [`expiring_soon_${days}d`]: { count: expiringTotal, memories: expiringSoon },
+      [`older_than_${olderThanDays}d`]: { count: olderTotal, memories: olderThan },
     },
-    note: "Report only — no memories were modified. Memories may appear in multiple buckets.",
+    note: "Report only — no memories were modified. Memories may appear in multiple buckets. Bucket counts are exact; the memories list is capped at the limit.",
   }, null, 2);
 }
 

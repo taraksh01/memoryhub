@@ -122,8 +122,9 @@ Usage:
   memoryhub --version, -v Show version
 
 MCP tools:
-  add_memories, search_memory, list_memories, get_memory,
-  update_memory, delete_memories, delete_all_memories,
+  add_memories, batch_add_memories, search_memory, list_memories,
+  get_memory, get_memories, update_memory, delete_memories,
+  delete_all_memories, export_memories, import_memories, review_stale,
   memory_stats, get_config, update_config, health_check
 
 Docs: https://github.com/taraksh01/memoryhub`);
@@ -146,7 +147,11 @@ async function ensureQdrant(): Promise<void> {
     if (res.ok) return;
   } catch {}
   try {
-    const child = spawn("qdrant", [], { detached: true, stdio: "ignore" });
+    const configPath = join(MEMORYHUB_DIR, "qdrant.yaml");
+    const storagePath = join(MEMORYHUB_DIR, "qdrant-storage");
+    mkdirSync(MEMORYHUB_DIR, { recursive: true });
+    writeFileSync(configPath, `storage:\n  storage_path: ${storagePath}\nservice:\n  http_port: 6333\n  grpc_port: 6334\ntelemetry_disabled: true\n`);
+    const child = spawn("qdrant", ["--config-path", configPath, "--disable-telemetry"], { detached: true, stdio: "ignore" });
     child.on("error", () => {});
     child.unref();
   } catch {}

@@ -69,6 +69,21 @@ test("configFromFile maps the config file shape to keys", () => {
   assert.equal(v.EMBED_KEY, "ek");
 });
 
+test("configFromFile maps dedup and api_token fields", () => {
+  const dir = tmp();
+  const p = join(dir, "config.json");
+  
+  writeFileSync(p, JSON.stringify({
+    api_token: "tok-12345678",
+    dedup: { enabled: false, threshold: 0.9, skip_threshold: 0.98 },
+  }));
+  const v = cfg.configFromFile(p);
+  assert.equal(v.API_TOKEN, "tok-12345678");
+  assert.equal(v.DEDUP_ENABLED, "false");
+  assert.equal(v.DEDUP_THRESHOLD, "0.9");
+  assert.equal(v.DEDUP_SKIP_THRESHOLD, "0.98");
+});
+
 test("configFromFile ignores unknown fields", () => {
   const dir = tmp();
   const p = join(dir, "config.json");
@@ -120,6 +135,23 @@ test("buildConfig maps values to config shape and validates vector size", () => 
   assert.deepEqual(c, { qdrant: { url: "http://x:6333" }, vector_size: 512, llm: { model: "m", api_key: "k" } });
   assert.throws(() => cfg.buildConfig({ VECTOR_SIZE: "abc" }), /VECTOR_SIZE must be a positive integer/);
   assert.throws(() => cfg.buildConfig({ VECTOR_SIZE: "-5" }), /VECTOR_SIZE must be a positive integer/);
+});
+
+test("buildConfig maps API_TOKEN and dedup values", () => {
+  const c = cfg.buildConfig({ API_TOKEN: "tok-12345678", DEDUP_ENABLED: "false", DEDUP_THRESHOLD: "0.9", DEDUP_SKIP_THRESHOLD: "0.98" });
+  assert.equal(c.api_token, "tok-12345678");
+  assert.deepEqual(c.dedup, { enabled: false, threshold: 0.9, skip_threshold: 0.98 });
+});
+
+test("writeConfigFile preserves dedup and api_token on merge", () => {
+  const dir = tmp();
+  const p = join(dir, "config.json");
+  cfg.writeConfigFile(p, { api_token: "tok-12345678", dedup: { enabled: false, threshold: 0.9 } });
+  cfg.writeConfigFile(p, { llm: { model: "gpt-4o-mini" } });
+  const data = JSON.parse(readFileSync(p, "utf-8")) as Record<string, any>;
+  assert.equal(data.api_token, "tok-12345678");
+  assert.deepEqual(data.dedup, { enabled: false, threshold: 0.9 });
+  assert.equal(data.llm.model, "gpt-4o-mini");
 });
 
 test("verifySettings reports all checks passing", async (t) => {

@@ -2,6 +2,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { randomUUID } from "node:crypto";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { getConfig } from "./config.js";
 
 export interface HttpHandle {
   httpServer: ReturnType<typeof createServer>;
@@ -13,6 +14,7 @@ export interface HttpServerOptions {
 }
 
 const DEFAULT_SESSION_IDLE_MS = 60 * 60 * 1000;
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
 interface Session {
   server: McpServer;
@@ -25,12 +27,49 @@ function sessionIdFrom(req: IncomingMessage): string | undefined {
   return typeof h === "string" ? h : undefined;
 }
 
+function unauthorized(res: ServerResponse): void {
+  res.writeHead(401, { "WWW-Authenticate": 'Bearer realm="memoryhub"' }).end("Unauthorized: set the Authorization: Bearer <token> header");
+}
+
+function checkAuth(req: IncomingMessage, res: ServerResponse): boolean {
+  const token = getConfig("API_TOKEN");
+  if (!token) return true;
+  const header = req.headers["authorization"];
+  if (typeof header !== "string") {
+    unauthorized(res);
+    return false;
+  }
+  const [scheme, value] = header.split(" ");
+  if (scheme?.toLowerCase() !== "bearer" || value !== token) {
+    unauthorized(res);
+    return false;
+  }
+  return true;
+}
+
+function enforceBodyLimit(req: IncomingMessage, res: ServerResponse): void {
+  let bytes = 0;
+  req.on("data", (chunk: Buffer) => {
+    bytes += chunk.length;
+    if (bytes > MAX_BODY_BYTES) {
+      if (!res.headersSent) res.writeHead(413).end("Payload too large");
+      req.destroy();
+    }
+  });
+}
+
 export function createHttpServer(serverFactory: () => McpServer, options: HttpServerOptions = {}): HttpHandle {
   const sessions = new Map<string, Session>();
   const idleMs = options.sessionIdleMs ?? DEFAULT_SESSION_IDLE_MS;
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     try {
+      if (req.method === "POST" && req.headers["content-length"] && Number(req.headers["content-length"]) > MAX_BODY_BYTES) {
+        res.writeHead(413).end("Payload too large");
+        return;
+      }
+      if (req.method === "POST" && !req.headers["content-length"]) enforceBodyLimit(req, res);
+      if (!checkAuth(req, res)) return;
       if (req.method === "GET" && req.url === "/mcp") {
         const sessionId = sessionIdFrom(req);
         const session = sessionId ? sessions.get(sessionId) : undefined;
@@ -79,7 +118,8 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         res.writeHead(404).end("Not found");
       }
     } catch (e) {
-      if (!res.headersSent) res.writeHead(500).end(e instanceof Error ? e.message : "Internal error");
+      console.error("memoryhub: request error: " + (e instanceof Error ? e.message : String(e)));
+      if (!res.headersSent) res.writeHead(500).end("Internal error");
     }
   });
 
