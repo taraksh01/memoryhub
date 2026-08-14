@@ -198,6 +198,25 @@ test("mergeTexts dedupes repeated sentences case-insensitively", () => {
   );
 });
 
+test("mergeTexts dedupes repeats that differ only by trailing punctuation", () => {
+  assert.equal(mem.mergeTexts("first fact", "first fact."), "first fact");
+  assert.equal(mem.mergeTexts("first fact!", "FIRST FACT"), "first fact!");
+});
+
+test("addMemoriesRaw rejects invalid threshold and dedup before any API call", async () => {
+  let called = false;
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  const m = mock.method(globalThis, "fetch", async () => { called = true; return originalFetch("http://x"); });
+  try {
+    await assert.rejects(mem.addMemoriesRaw("some text", undefined, { threshold: 0 }), /threshold must be a number between 0 and 1/);
+    await assert.rejects(mem.addMemoriesRaw("some text", undefined, { threshold: 1 }), /threshold must be a number between 0 and 1/);
+    await assert.rejects(mem.addMemoriesRaw("some text", undefined, { dedup: "yes" }), /dedup must be a boolean/);
+    assert.equal(called, false);
+  } finally {
+    m.mock.restore();
+  }
+});
+
 test("toRecord maps payload fields", () => {
   const rec = mem.toRecord({
     id: "abc-123",

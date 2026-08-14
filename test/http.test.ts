@@ -241,6 +241,11 @@ test("new tools reject invalid arguments", async () => {
     { name: "search_memory", arguments: { query: "x", exact: "yes" } },
     { name: "search_memory", arguments: { query: "x", min_score: 1.5 } },
     { name: "search_memory", arguments: { query: "x", min_score: -0.1 } },
+    { name: "search_memory", arguments: { query: "x", exact: true, min_score: 0.5 } },
+    { name: "batch_add_memories", arguments: { items: [{ text: "" }] } },
+    { name: "add_memories", arguments: { text: "x", threshold: 0 } },
+    { name: "add_memories", arguments: { text: "x", threshold: 1 } },
+    { name: "add_memories", arguments: { text: "x", dedup: "yes" } },
   ];
   for (let i = 0; i < calls.length; i++) {
     const { message } = await mcpPost(sessionId, JSON.stringify({
@@ -448,6 +453,23 @@ test("update_config masks secret values in the response", async () => {
   const text = JSON.parse(message.result.content[0].text);
   assert.equal(text.updated, "LLM_KEY");
   assert.equal(text.value, "sk-s****1234");
+});
+
+test("update_config masks API_TOKEN in the response", async () => {
+  const { sessionId } = await initialize();
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 32,
+    method: "tools/call",
+    params: { name: "update_config", arguments: { key: "API_TOKEN", value: "sekrit-token-123456" } },
+  }));
+  try {
+    const text = JSON.parse(message.result.content[0].text);
+    assert.equal(text.updated, "API_TOKEN");
+    assert.equal(text.value, "sekr****3456");
+  } finally {
+    setConfig("API_TOKEN", "");
+  }
 });
 
 test("DELETE /mcp closes the session", async () => {

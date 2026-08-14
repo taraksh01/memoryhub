@@ -124,7 +124,7 @@ Use scopes to keep memories isolated per repo, per feature, or any other boundar
 |------|-------------|---------------|
 | `add_memories` | Store text (LLM extracts facts, embeds them). Deduplicates near-duplicates by default. Optional `project`, `source`, `importance` (0–1), `expires_at` (ISO), `dedup` (bool), `threshold` (0–1). Returns per-memory `action`: `inserted` \| `merged` \| `skipped` | Optional `project` |
 | `batch_add_memories` | Add multiple texts in one call (`items: [{text, project?, source?, importance?, expires_at?, dedup?, threshold?}]`). Per-item outcomes; item-level failures don't abort the batch | Optional `project` per item |
-| `search_memory` | Semantic search with optional limit; returns full metadata per hit. Filter by `project` and/or `source`; set `exact: true` to match the query text verbatim instead of by similarity; `min_score` (0–1) drops hits below a similarity threshold | Optional `project` / `source` filter |
+| `search_memory` | Semantic search with optional limit; returns full metadata per hit. Filter by `project` and/or `source`; set `exact: true` to match the query text verbatim instead of by similarity; `min_score` (0–1) drops hits below a similarity threshold (not usable with `exact: true`) | Optional `project` / `source` filter |
 | `list_memories` | List memories with pagination (`limit`, `offset` as cursor from `next_offset`); newest first; filter by `project` and/or `source`; returns full metadata | Optional `project` / `source` filter |
 | `get_memory` | Get a single memory by ID (full metadata) | — |
 | `get_memories` | Get multiple memories by IDs | — |
@@ -157,7 +157,7 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 | `memoryhub stop` | Stop daemon |
 | `memoryhub status` | Check daemon status |
 | `memoryhub bootstrap` | Auto-start Qdrant if needed, then serve |
-| `memoryhub configure` | Interactive setup wizard (Qdrant, LLM, embedder) with connectivity checks; `--set KEY=VALUE`, `--file`, `--no-verify` for scripted use |
+| `memoryhub configure` | Interactive setup wizard (Qdrant, LLM, embedder) with connectivity checks; `--set KEY=VALUE`, `--file`, `--no-verify` for scripted use. `--set` and `--file` support all keys including `API_TOKEN` and `DEDUP_*` |
 | `memoryhub install [--start]` | Install auto-start service (systemd/launchd/Windows); `--start` also starts it immediately |
 | `memoryhub uninstall` | Remove auto-start service |
 | `memoryhub --help` | Show help |
