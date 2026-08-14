@@ -70,6 +70,8 @@ export function createMcpServer(version: string): Server {
         case "add_memories": {
           assert(typeof a.text === "string" && a.text, "text is required (string)");
           if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
+          if (a.dedup !== undefined) assert(typeof a.dedup === "boolean", "dedup must be a boolean");
+          if (a.threshold !== undefined) assert(typeof a.threshold === "number" && a.threshold > 0 && a.threshold < 1, "threshold must be a number between 0 and 1");
           result = await addMemories(a.text, a.project, {
             source: a.source,
             importance: a.importance,
@@ -81,7 +83,7 @@ export function createMcpServer(version: string): Server {
         }
         case "batch_add_memories": {
           assert(Array.isArray(a.items) && a.items.length > 0, "items must be a non-empty array");
-          assert(a.items.every((it: unknown) => typeof (it as Record<string, unknown>)?.text === "string"), "each item's text must be a non-empty string");
+          assert(a.items.every((it: unknown) => { const t = (it as Record<string, unknown>)?.text; return typeof t === "string" && t.trim() !== ""; }), "each item's text must be a non-empty string");
           result = await batchAddMemories(a.items as { text: string; project?: string; source?: string; importance?: number; expires_at?: string; dedup?: boolean; threshold?: number }[]);
           break;
         }
@@ -92,6 +94,7 @@ export function createMcpServer(version: string): Server {
           if (a.source !== undefined) assert(typeof a.source === "string" && a.source, "source must be a non-empty string");
           if (a.exact !== undefined) assert(typeof a.exact === "boolean", "exact must be a boolean");
           if (a.min_score !== undefined) assert(typeof a.min_score === "number" && a.min_score > 0 && a.min_score <= 1, "min_score must be a number between 0 and 1");
+          assert(!(a.exact === true && a.min_score !== undefined), "when exact=true, min_score must be omitted");
           result = await searchMemories(a.query, a.limit ?? 10, a.project, { source: a.source, exact: a.exact, min_score: a.min_score });
           break;
         }
@@ -162,11 +165,11 @@ export function createMcpServer(version: string): Server {
           assert(typeof a.value === "string", "value is required (string)");
           if (a.persist === true) {
             const path = persistConfig(a.key, a.value);
-            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" ? mask(a.value) : a.value;
+            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? mask(a.value) : a.value;
             result = JSON.stringify({ updated: a.key, value, persisted: true, path });
           } else {
             setConfig(a.key, a.value);
-            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" ? mask(a.value) : a.value;
+            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? mask(a.value) : a.value;
             result = JSON.stringify({ updated: a.key, value, persisted: false });
           }
           break;
