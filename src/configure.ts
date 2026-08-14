@@ -23,7 +23,8 @@ Usage:
   memoryhub configure --help          Show this help
 
 Valid keys: QDRANT_URL, COLLECTION, VECTOR_SIZE, LLM_MODEL, LLM_BASE,
-            LLM_KEY, EMBED_MODEL, EMBED_BASE, EMBED_KEY, RETRY_DELAY_MS
+            LLM_KEY, EMBED_MODEL, EMBED_BASE, EMBED_KEY, RETRY_DELAY_MS,
+            DEDUP_ENABLED, DEDUP_THRESHOLD, DEDUP_SKIP_THRESHOLD, API_TOKEN
 `;
 
 function applySet(opts: ConfigureOptions, pair: string) {

@@ -17,6 +17,7 @@ interface ToolArgs {
   project?: string;
   source?: string;
   exact?: boolean;
+  min_score?: number;
   importance?: number;
   expires_at?: string;
   dedup?: boolean;
@@ -43,7 +44,7 @@ export function createMcpServer(version: string): Server {
     tools: [
       { name: "add_memories", description: "Store text (LLM extracts facts, embeds, stores). Deduplicates semantically similar memories by default.", inputSchema: { type: "object", properties: { text: { type: "string" }, project: { type: "string" }, source: { type: "string" }, importance: { type: "number" }, expires_at: { type: "string" }, dedup: { type: "boolean" }, threshold: { type: "number" } }, required: ["text"] } },
       { name: "batch_add_memories", description: "Add multiple texts in one call. Each item follows add_memories semantics; results are reported per item and item-level failures do not abort the batch.", inputSchema: { type: "object", properties: { items: { type: "array", items: { type: "object", properties: { text: { type: "string" }, project: { type: "string" }, source: { type: "string" }, importance: { type: "number" }, expires_at: { type: "string" }, dedup: { type: "boolean" }, threshold: { type: "number" } }, required: ["text"] } } }, required: ["items"] } },
-      { name: "search_memory", description: "Semantic search across stored memories. Set exact=true to match the query text verbatim instead of by similarity; filter by project and/or source.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, project: { type: "string" }, source: { type: "string" }, exact: { type: "boolean" } }, required: ["query"] } },
+      { name: "search_memory", description: "Semantic search across stored memories. Set exact=true to match the query text verbatim instead of by similarity; filter by project and/or source; min_score drops hits below a similarity threshold.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, project: { type: "string" }, source: { type: "string" }, exact: { type: "boolean" }, min_score: { type: "number" } }, required: ["query"] } },
       { name: "list_memories", description: "List stored memories with pagination; filter by project and/or source.", inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "string" }, project: { type: "string" }, source: { type: "string" } } } },
       { name: "get_memory", description: "Get a single memory by ID.", inputSchema: { type: "object", properties: { memory_id: { type: "string" } }, required: ["memory_id"] } },
       { name: "get_memories", description: "Get multiple memories by IDs.", inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } }, required: ["ids"] } },
@@ -90,7 +91,8 @@ export function createMcpServer(version: string): Server {
           if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
           if (a.source !== undefined) assert(typeof a.source === "string" && a.source, "source must be a non-empty string");
           if (a.exact !== undefined) assert(typeof a.exact === "boolean", "exact must be a boolean");
-          result = await searchMemories(a.query, a.limit ?? 10, a.project, { source: a.source, exact: a.exact });
+          if (a.min_score !== undefined) assert(typeof a.min_score === "number" && a.min_score > 0 && a.min_score <= 1, "min_score must be a number between 0 and 1");
+          result = await searchMemories(a.query, a.limit ?? 10, a.project, { source: a.source, exact: a.exact, min_score: a.min_score });
           break;
         }
         case "list_memories": {
