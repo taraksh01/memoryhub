@@ -127,7 +127,7 @@ test("POST /mcp tools/call add_memories stores a memory", async (t) => {
     if (u.includes("/embeddings")) {
       return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
     }
-    return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1 } }), {
+    return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
       status: 200,
       headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
     });
@@ -141,7 +141,12 @@ test("POST /mcp tools/call add_memories stores a memory", async (t) => {
   const text = message.result.content[0].text;
   const parsed = JSON.parse(text);
   assert.equal(parsed.added, 1);
-  assert.deepEqual(parsed.memories, ["remember pnpm"]);
+  assert.equal(parsed.merged, 0);
+  assert.equal(parsed.skipped, 0);
+  assert.equal(parsed.memories.length, 1);
+  assert.equal(parsed.memories[0].text, "remember pnpm");
+  assert.equal(parsed.memories[0].action, "inserted");
+  assert.ok(parsed.memories[0].id);
 });
 
 test("tools/call returns structured error for invalid input", async () => {
