@@ -68,6 +68,10 @@ const FILE_KEY_MAP: Record<string, string> = {
   "embedder.model": "EMBED_MODEL",
   "embedder.base_url": "EMBED_BASE",
   "embedder.api_key": "EMBED_KEY",
+  "dedup.enabled": "DEDUP_ENABLED",
+  "dedup.threshold": "DEDUP_THRESHOLD",
+  "dedup.skip_threshold": "DEDUP_SKIP_THRESHOLD",
+  api_token: "API_TOKEN",
 };
 
 function dotGet(obj: unknown, path: string): unknown {
@@ -90,7 +94,7 @@ export function configFromFile(path: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [dot, key] of Object.entries(FILE_KEY_MAP)) {
     const value = dotGet(data, dot);
-    if (typeof value === "string" || typeof value === "number") result[key] = String(value);
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") result[key] = String(value);
   }
   return result;
 }
@@ -122,6 +126,13 @@ export function buildConfig(values: Record<string, string>): MemoryHubConfig {
     if (values.EMBED_BASE) cfg.embedder.base_url = values.EMBED_BASE;
     if (values.EMBED_KEY) cfg.embedder.api_key = values.EMBED_KEY;
   }
+  if (values.API_TOKEN) cfg.api_token = values.API_TOKEN;
+  if (values.DEDUP_ENABLED || values.DEDUP_THRESHOLD || values.DEDUP_SKIP_THRESHOLD) {
+    cfg.dedup = {};
+    if (values.DEDUP_ENABLED) cfg.dedup.enabled = values.DEDUP_ENABLED === "true";
+    if (values.DEDUP_THRESHOLD) cfg.dedup.threshold = Number(values.DEDUP_THRESHOLD);
+    if (values.DEDUP_SKIP_THRESHOLD) cfg.dedup.skip_threshold = Number(values.DEDUP_SKIP_THRESHOLD);
+  }
   return cfg;
 }
 
@@ -143,6 +154,8 @@ function mergeConfigs(base: MemoryHubConfig, extra: MemoryHubConfig): MemoryHubC
   if (extra.retry_delay_ms !== undefined) out.retry_delay_ms = extra.retry_delay_ms;
   if (extra.llm) out.llm = { ...base.llm, ...extra.llm };
   if (extra.embedder) out.embedder = { ...base.embedder, ...extra.embedder };
+  if (extra.api_token !== undefined) out.api_token = extra.api_token;
+  if (extra.dedup) out.dedup = { ...base.dedup, ...extra.dedup };
   return out;
 }
 
