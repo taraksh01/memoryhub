@@ -105,6 +105,7 @@ Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `
 | `MEMORYHUB_DEDUP_ENABLED` | — | `true` | Semantic dedup on `add_memories` (merge/skip near-duplicates) |
 | `MEMORYHUB_DEDUP_THRESHOLD` | — | `0.85` | Similarity score ≥ this merges the new fact into the existing memory |
 | `MEMORYHUB_DEDUP_SKIP_THRESHOLD` | — | `0.99` | Similarity score ≥ this skips the new fact entirely (identical duplicate) |
+| `MEMORYHUB_API_TOKEN` | — | — | Optional bearer token. When set, the HTTP transport requires `Authorization: Bearer <token>` on every request (401 otherwise) |
 
 ## Memory Scopes
 
@@ -123,8 +124,8 @@ Use scopes to keep memories isolated per repo, per feature, or any other boundar
 |------|-------------|---------------|
 | `add_memories` | Store text (LLM extracts facts, embeds them). Deduplicates near-duplicates by default. Optional `project`, `source`, `importance` (0–1), `expires_at` (ISO), `dedup` (bool), `threshold` (0–1). Returns per-memory `action`: `inserted` \| `merged` \| `skipped` | Optional `project` |
 | `batch_add_memories` | Add multiple texts in one call (`items: [{text, project?, source?, importance?, expires_at?, dedup?, threshold?}]`). Per-item outcomes; item-level failures don't abort the batch | Optional `project` per item |
-| `search_memory` | Semantic search with optional limit; returns full metadata per hit. Filter by `project` and/or `source`; set `exact: true` to match the query text verbatim instead of by similarity | Optional `project` / `source` filter |
-| `list_memories` | List memories with pagination (`limit`, `offset` as cursor from `next_offset`); filter by `project` and/or `source`; returns full metadata | Optional `project` / `source` filter |
+| `search_memory` | Semantic search with optional limit; returns full metadata per hit. Filter by `project` and/or `source`; set `exact: true` to match the query text verbatim instead of by similarity; `min_score` (0–1) drops hits below a similarity threshold | Optional `project` / `source` filter |
+| `list_memories` | List memories with pagination (`limit`, `offset` as cursor from `next_offset`); newest first; filter by `project` and/or `source`; returns full metadata | Optional `project` / `source` filter |
 | `get_memory` | Get a single memory by ID (full metadata) | — |
 | `get_memories` | Get multiple memories by IDs | — |
 | `update_memory` | Update a memory's text (re-embeds); optional `source`, `importance`, `expires_at` | — |
@@ -167,7 +168,7 @@ LLM and embedding API calls retry up to 3 times on transient errors (rate limits
 - **stdio** (default): Connect MCP clients via stdin/stdout
 - **Streamable HTTP**: `memoryhub serve` starts an HTTP server on port 9876 implementing the MCP Streamable HTTP transport (single `POST /mcp` endpoint, session management via `Mcp-Session-Id` header, `DELETE /mcp` to close a session). Clients must send `Accept: application/json, text/event-stream` on POST requests. The server binds to `::` **dual-stack** by default (accepts both IPv4 and IPv6) — set `MEMORYHUB_IPV6_ONLY=true` to restrict to IPv6 only, or `MEMORYHUB_HOST` to pick a specific address. Sessions idle for over 1 hour are pruned automatically.
 
-Remote clients connect to `http://<host>:9876/mcp`.
+Remote clients connect to `http://<host>:9876/mcp`. If `API_TOKEN` is set, every request must include `Authorization: Bearer <token>`; unauthenticated requests get `401`. Request bodies are capped at 5 MB (`413`).
 
 ## Build
 
