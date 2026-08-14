@@ -1,7 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { addMemories, searchMemories, listMemories, getMemory, updateMemory, deleteMemories, deleteAllMemories, getStats, healthCheck } from "./memory.js";
-import { getAllConfig, mask, setConfig } from "./config.js";
+import { getAllConfig, mask, setConfig, persistConfig } from "./config.js";
 
 interface ToolArgs {
   text?: string;
@@ -13,6 +13,12 @@ interface ToolArgs {
   key?: string;
   value?: string;
   project?: string;
+  source?: string;
+  importance?: number;
+  expires_at?: string;
+  dedup?: boolean;
+  threshold?: number;
+  persist?: boolean;
 }
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -24,16 +30,16 @@ export function createMcpServer(version: string): Server {
 
   mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      { name: "add_memories", description: "Store text (LLM extracts facts, embeds, stores).", inputSchema: { type: "object", properties: { text: { type: "string" }, project: { type: "string" } }, required: ["text"] } },
+      { name: "add_memories", description: "Store text (LLM extracts facts, embeds, stores). Deduplicates semantically similar memories by default.", inputSchema: { type: "object", properties: { text: { type: "string" }, project: { type: "string" }, source: { type: "string" }, importance: { type: "number" }, expires_at: { type: "string" }, dedup: { type: "boolean" }, threshold: { type: "number" } }, required: ["text"] } },
       { name: "search_memory", description: "Semantic search across stored memories.", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" }, project: { type: "string" } }, required: ["query"] } },
       { name: "list_memories", description: "List stored memories with pagination.", inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "string" }, project: { type: "string" } } } },
       { name: "get_memory", description: "Get a single memory by ID.", inputSchema: { type: "object", properties: { memory_id: { type: "string" } }, required: ["memory_id"] } },
-      { name: "update_memory", description: "Update a memory's text (re-embeds).", inputSchema: { type: "object", properties: { memory_id: { type: "string" }, text: { type: "string" } }, required: ["memory_id", "text"] } },
+      { name: "update_memory", description: "Update a memory's text (re-embeds).", inputSchema: { type: "object", properties: { memory_id: { type: "string" }, text: { type: "string" }, source: { type: "string" }, importance: { type: "number" }, expires_at: { type: "string" } }, required: ["memory_id", "text"] } },
       { name: "delete_memories", description: "Delete specific memories by IDs.", inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" } } }, required: ["ids"] } },
       { name: "delete_all_memories", description: "Delete ALL memories (or filter by project).", inputSchema: { type: "object", properties: { project: { type: "string" } } } },
-      { name: "memory_stats", description: "Get collection statistics.", inputSchema: { type: "object", properties: {} } },
+      { name: "memory_stats", description: "Get collection statistics (totals, per project/source, expiry, age).", inputSchema: { type: "object", properties: {} } },
       { name: "get_config", description: "Show current runtime configuration.", inputSchema: { type: "object", properties: {} } },
-      { name: "update_config", description: "Update a config value at runtime (not persisted).", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } }, required: ["key", "value"] } },
+      { name: "update_config", description: "Update a config value at runtime. Set persist=true to write it to the config file (survives restart).", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" }, persist: { type: "boolean" } }, required: ["key", "value"] } },
       { name: "health_check", description: "Check connectivity to Qdrant.", inputSchema: { type: "object", properties: {} } },
     ],
   }));
@@ -47,7 +53,13 @@ export function createMcpServer(version: string): Server {
         case "add_memories": {
           assert(typeof a.text === "string" && a.text, "text is required (string)");
           if (a.project !== undefined) assert(typeof a.project === "string" && a.project, "project must be a non-empty string");
-          result = await addMemories(a.text, a.project);
+          result = await addMemories(a.text, a.project, {
+            source: a.source,
+            importance: a.importance,
+            expires_at: a.expires_at,
+            dedup: a.dedup,
+            threshold: a.threshold,
+          });
           break;
         }
         case "search_memory": {
@@ -68,7 +80,7 @@ export function createMcpServer(version: string): Server {
         case "update_memory": {
           assert(typeof a.memory_id === "string" && a.memory_id, "memory_id is required (string)");
           assert(typeof a.text === "string" && a.text, "text is required (string)");
-          result = await updateMemory(a.memory_id, a.text);
+          result = await updateMemory(a.memory_id, a.text, { source: a.source, importance: a.importance, expires_at: a.expires_at });
           break;
         }
         case "delete_memories": {
@@ -87,9 +99,15 @@ export function createMcpServer(version: string): Server {
         case "update_config": {
           assert(typeof a.key === "string" && a.key, "key is required (string)");
           assert(typeof a.value === "string", "value is required (string)");
-          setConfig(a.key, a.value);
-          const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" ? mask(a.value) : a.value;
-          result = JSON.stringify({ updated: a.key, value });
+          if (a.persist === true) {
+            const path = persistConfig(a.key, a.value);
+            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" ? mask(a.value) : a.value;
+            result = JSON.stringify({ updated: a.key, value, persisted: true, path });
+          } else {
+            setConfig(a.key, a.value);
+            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" ? mask(a.value) : a.value;
+            result = JSON.stringify({ updated: a.key, value, persisted: false });
+          }
           break;
         }
         case "health_check": { result = await healthCheck(); break; }

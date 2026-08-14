@@ -150,3 +150,49 @@ test("fetch timeouts abort the request", async (t) => {
 test("updateMemory rejects input over MAX_INPUT", async () => {
   await assert.rejects(mem.updateMemory("id-1", "x".repeat(50001)), /Input too long/);
 });
+
+test("decideAction: below threshold inserts", () => {
+  assert.equal(mem.decideAction(0.5, 0.85, 0.99), "inserted");
+});
+
+test("decideAction: at threshold merges", () => {
+  assert.equal(mem.decideAction(0.85, 0.85, 0.99), "merged");
+  assert.equal(mem.decideAction(0.9, 0.85, 0.99), "merged");
+});
+
+test("decideAction: at skip threshold skips", () => {
+  assert.equal(mem.decideAction(0.99, 0.85, 0.99), "skipped");
+  assert.equal(mem.decideAction(1, 0.85, 0.99), "skipped");
+});
+
+test("decideAction: custom thresholds honored", () => {
+  assert.equal(mem.decideAction(0.8, 0.8, 0.95), "merged");
+  assert.equal(mem.decideAction(0.79, 0.8, 0.95), "inserted");
+});
+
+test("mergeTexts joins with a single space", () => {
+  assert.equal(mem.mergeTexts("first fact", "second fact"), "first fact second fact");
+  assert.equal(mem.mergeTexts("  first  ", " second "), "first second");
+});
+
+test("toRecord maps payload fields", () => {
+  const rec = mem.toRecord({
+    id: "abc-123",
+    payload: { text: "hello", project: "proj", source: "chat", created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-02T00:00:00.000Z", expires_at: "2026-02-01T00:00:00.000Z", importance: 0.7 },
+  });
+  assert.deepEqual(rec, {
+    id: "abc-123",
+    text: "hello",
+    project: "proj",
+    source: "chat",
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-02T00:00:00.000Z",
+    expires_at: "2026-02-01T00:00:00.000Z",
+    importance: 0.7,
+  });
+});
+
+test("toRecord defaults for missing metadata", () => {
+  const rec = mem.toRecord({ id: "1", payload: { text: "only text" } });
+  assert.deepEqual(rec, { id: "1", text: "only text" });
+});

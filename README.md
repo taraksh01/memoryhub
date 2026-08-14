@@ -62,6 +62,11 @@ Create a `memoryhub.json` in your project root, or `config.json` in the memoryhu
   "collection": "memories",
   "vector_size": 768,
   "retry_delay_ms": 1000,
+  "dedup": {
+    "enabled": true,
+    "threshold": 0.85,
+    "skip_threshold": 0.99
+  },
   "llm": {
     "model": "gpt-4o-mini",
     "base_url": "https://api.openai.com/v1",
@@ -97,6 +102,9 @@ Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `
 | `MEMORYHUB_HOST` | — | `::` | Bind host for HTTP serve mode (dual-stack by default: accepts both IPv4 and IPv6 on `::`). Set `0.0.0.0` for IPv4-only |
 | `MEMORYHUB_IPV6_ONLY` | — | `false` | Set `true` to make the `::` socket IPv6-only (no IPv4 connections) |
 | `MEMORYHUB_RETRY_DELAY_MS` | — | `1000` | Base retry delay for LLM/embed API calls (exponential backoff) |
+| `MEMORYHUB_DEDUP_ENABLED` | — | `true` | Semantic dedup on `add_memories` (merge/skip near-duplicates) |
+| `MEMORYHUB_DEDUP_THRESHOLD` | — | `0.85` | Similarity score ≥ this merges the new fact into the existing memory |
+| `MEMORYHUB_DEDUP_SKIP_THRESHOLD` | — | `0.99` | Similarity score ≥ this skips the new fact entirely (identical duplicate) |
 
 ## Memory Scopes
 
@@ -113,19 +121,21 @@ Use scopes to keep memories isolated per repo, per feature, or any other boundar
 
 | Tool | Description | Scope Support |
 |------|-------------|---------------|
-| `add_memories` | Store text (LLM extracts facts, embeds them) | Optional `project` |
-| `search_memory` | Semantic search with optional limit | Optional `project` filter |
-| `list_memories` | List memories with pagination (`limit`, `offset` as cursor from `next_offset`) | Optional `project` filter |
-| `get_memory` | Get a single memory by ID | — |
-| `update_memory` | Update a memory's text (re-embeds) | — |
+| `add_memories` | Store text (LLM extracts facts, embeds them). Deduplicates near-duplicates by default. Optional `project`, `source`, `importance` (0–1), `expires_at` (ISO), `dedup` (bool), `threshold` (0–1). Returns per-memory `action`: `inserted` \| `merged` \| `skipped` | Optional `project` |
+| `search_memory` | Semantic search with optional limit; returns full metadata per hit | Optional `project` filter |
+| `list_memories` | List memories with pagination (`limit`, `offset` as cursor from `next_offset`); returns full metadata | Optional `project` filter |
+| `get_memory` | Get a single memory by ID (full metadata) | — |
+| `update_memory` | Update a memory's text (re-embeds); optional `source`, `importance`, `expires_at` | — |
 | `delete_memories` | Delete specific memories by IDs | — |
 | `delete_all_memories` | Delete ALL memories (or filter by project) | Optional `project` filter, returns count |
-| `memory_stats` | Collection statistics | — |
+| `memory_stats` | Collection statistics: totals, `by_project`, `by_source`, `expired`, `expiring_soon_7d`, `avg_age_days`, `oldest/newest_created_at`, `size_bytes` (estimate) | — |
 | `get_config` | Show current runtime configuration (API keys masked) | — |
-| `update_config` | Update a config value at runtime (not persisted) | — |
+| `update_config` | Update a config value at runtime; set `persist: true` to write it atomically to the config file | — |
 | `health_check` | Check connectivity to Qdrant | — |
 
-> Config changes via `update_config` are in-memory only — lost on restart. Use config file or env vars for permanent changes.
+Every memory stores `created_at`, `updated_at`, and (when provided) `project`, `source`, `expires_at`, `importance`; all read tools return these fields.
+
+> Config changes via `update_config` are in-memory only unless `persist: true` is passed (writes to `~/.memoryhub/config.json` atomically, survives restart).
 
 ## Retry
 
