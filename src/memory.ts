@@ -242,8 +242,11 @@ export function toRecord(p: { id: string | number; payload?: Record<string, unkn
   return rec;
 }
 
-function projectFilter(project?: string): Record<string, unknown> | undefined {
-  return project ? { must: [{ key: "project", match: { value: project } }] } : undefined;
+function payloadFilter(project?: string, source?: string): { must: Record<string, unknown>[] } | undefined {
+  const must: Record<string, unknown>[] = [];
+  if (project) must.push({ key: "project", match: { value: project } });
+  if (source) must.push({ key: "source", match: { value: source } });
+  return must.length ? { must } : undefined;
 }
 
 export function decideAction(score: number, threshold: number, skipThreshold: number): "merged" | "skipped" | "inserted" {
@@ -257,26 +260,26 @@ export function mergeTexts(oldText: string, newText: string): string {
 }
 
 async function findDuplicate(fact: string, vector: number[], project?: string): Promise<{ id: string; text: string; score: number } | null> {
-  const r = await qdrant().query(getConfig("COLLECTION"), { query: vector, limit: 1, with_payload: true, filter: projectFilter(project) });
+  const r = await qdrant().query(getConfig("COLLECTION"), { query: vector, limit: 1, with_payload: true, filter: payloadFilter(project) });
   const top = r.points[0];
   if (!top || typeof top.score !== "number") return null;
   return { id: String(top.id), text: String(top.payload?.text ?? ""), score: top.score };
 }
 
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
   const worker = async () => {
     while (next < items.length) {
       const i = next++;
-      results[i] = await fn(items[i]);
+      results[i] = await fn(items[i], i);
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
 
-export async function addMemories(text: string, project?: string, opts: AddOptions = {}) {
+export async function addMemoriesRaw(text: string, project?: string, opts: AddOptions = {}): Promise<{ added: number; merged: number; skipped: number; memories: AddOutcome[] }> {
   if (text.length > MAX_INPUT) throw new Error(`Input too long (${text.length} chars, max ${MAX_INPUT})`);
   validateMetadata(opts);
   requireEmbedConfig();
@@ -328,20 +331,148 @@ export async function addMemories(text: string, project?: string, opts: AddOptio
   const added = outcomes.filter((o) => o.action === "inserted").length;
   const merged = outcomes.filter((o) => o.action === "merged").length;
   const skipped = outcomes.filter((o) => o.action === "skipped").length;
-  return JSON.stringify({ added, merged, skipped, memories: outcomes }, null, 2);
+  return { added, merged, skipped, memories: outcomes };
 }
 
-export async function searchMemories(query: string, limit: number = 10, project?: string) {
+export async function addMemories(text: string, project?: string, opts: AddOptions = {}) {
+  return JSON.stringify(await addMemoriesRaw(text, project, opts), null, 2);
+}
+
+export interface BatchItem {
+  text: string;
+  project?: string;
+  source?: string;
+  importance?: number;
+  expires_at?: string;
+  dedup?: boolean;
+  threshold?: number;
+}
+
+const BATCH_CONCURRENCY = 5;
+const MAX_BATCH_ITEMS = 100;
+
+export async function batchAddMemories(items: BatchItem[]) {
+  if (!items.length) throw new Error("items must be a non-empty array");
+  if (items.length > MAX_BATCH_ITEMS) throw new Error(`Too many items (${items.length}, max ${MAX_BATCH_ITEMS})`);
+  const results: Record<string, unknown>[] = [];
+  await mapLimit(items, BATCH_CONCURRENCY, async (item, index) => {
+    try {
+      const r = await addMemoriesRaw(item.text, item.project, {
+        source: item.source,
+        importance: item.importance,
+        expires_at: item.expires_at,
+        dedup: item.dedup,
+        threshold: item.threshold,
+      });
+      results.push({ index, ...r });
+    } catch (e) {
+      results.push({ index, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+  return JSON.stringify({ processed: items.length, items: results }, null, 2);
+}
+
+export async function exportMemories(project?: string, source?: string) {
+  const filter = payloadFilter(project, source);
+  const records: MemoryRecord[] = [];
+  let offset: string | number | Record<string, unknown> | null | undefined;
+  do {
+    const page = await qdrant().scroll(getConfig("COLLECTION"), { limit: MAX_LIST_LIMIT, offset, with_payload: true, filter });
+    records.push(...page.points.map((p) => toRecord(p)));
+    offset = page.next_page_offset;
+  } while (offset !== null && offset !== undefined);
+  return JSON.stringify({ exported_at: nowIso(), count: records.length, memories: records }, null, 2);
+}
+
+const IMPORT_CONCURRENCY = 5;
+const MAX_IMPORT_ITEMS = 10_000;
+
+function validateImportRecord(r: unknown, index: number): MemoryRecord {
+  if (typeof r !== "object" || r === null) throw new Error(`item ${index}: must be an object`);
+  const rec = r as Record<string, unknown>;
+  if (typeof rec.text !== "string" || !rec.text.trim()) throw new Error(`item ${index}: text must be a non-empty string`);
+  if (rec.id !== undefined && typeof rec.id !== "string") throw new Error(`item ${index}: id must be a string`);
+  if (rec.project !== undefined && (typeof rec.project !== "string" || !rec.project.trim())) throw new Error(`item ${index}: project must be a non-empty string`);
+  if (rec.source !== undefined && (typeof rec.source !== "string" || !rec.source.trim())) throw new Error(`item ${index}: source must be a non-empty string`);
+  if (rec.importance !== undefined && (typeof rec.importance !== "number" || rec.importance < 0 || rec.importance > 1)) throw new Error(`item ${index}: importance must be a number between 0 and 1`);
+  for (const k of ["created_at", "updated_at", "expires_at"] as const) {
+    if (rec[k] !== undefined && (typeof rec[k] !== "string" || isNaN(Date.parse(rec[k])))) throw new Error(`item ${index}: ${k} must be a valid ISO date string`);
+  }
+  return {
+    id: typeof rec.id === "string" ? rec.id : randomUUID(),
+    text: rec.text,
+    ...(typeof rec.project === "string" ? { project: rec.project } : {}),
+    ...(typeof rec.source === "string" ? { source: rec.source } : {}),
+    ...(typeof rec.importance === "number" ? { importance: rec.importance } : {}),
+    ...(typeof rec.created_at === "string" ? { created_at: rec.created_at } : {}),
+    ...(typeof rec.updated_at === "string" ? { updated_at: rec.updated_at } : {}),
+    ...(typeof rec.expires_at === "string" ? { expires_at: rec.expires_at } : {}),
+  };
+}
+
+export async function importMemories(data: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch (e) {
+    throw new Error(`data must be valid JSON (${e instanceof Error ? e.message : String(e)})`);
+  }
+  const list = Array.isArray(parsed) ? parsed : (parsed as Record<string, unknown>)?.memories;
+  if (!Array.isArray(list)) throw new Error("data must be an array of memories or an export envelope {memories: [...]}");
+  if (list.length > MAX_IMPORT_ITEMS) throw new Error(`Too many items (${list.length}, max ${MAX_IMPORT_ITEMS})`);
+  requireEmbedConfig();
+  const now = nowIso();
+  let imported = 0;
+  const failed: Record<string, unknown>[] = [];
+  await mapLimit(list, IMPORT_CONCURRENCY, async (raw, index) => {
+    try {
+      const rec = validateImportRecord(raw, index);
+      const vector = await embed(rec.text);
+      const payload: Record<string, unknown> = {
+        text: rec.text,
+        created_at: rec.created_at ?? now,
+        updated_at: rec.updated_at ?? now,
+      };
+      if (rec.project) payload.project = rec.project;
+      if (rec.source) payload.source = rec.source;
+      if (rec.importance !== undefined) payload.importance = rec.importance;
+      if (rec.expires_at) payload.expires_at = rec.expires_at;
+      await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id: rec.id, vector, payload }], wait: true });
+      imported++;
+    } catch (e) {
+      failed.push({ index, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+  return JSON.stringify({ imported, failed }, null, 2);
+}
+
+export async function getMemories(ids: string[]) {
+  const r = await qdrant().retrieve(getConfig("COLLECTION"), { ids, with_payload: true });
+  return JSON.stringify({ memories: r.map((p) => toRecord(p)) }, null, 2);
+}
+
+export interface SearchOptions {
+  source?: string;
+  exact?: boolean;
+}
+
+export async function searchMemories(query: string, limit: number = 10, project?: string, opts: SearchOptions = {}) {
+  const capped = Math.min(Math.max(1, limit), MAX_SEARCH_LIMIT);
+  const filter = payloadFilter(project, opts.source);
+  if (opts.exact) {
+    const must = [...(filter?.must ?? []), { key: "text", match: { value: query } }];
+    const r = await qdrant().scroll(getConfig("COLLECTION"), { limit: capped, with_payload: true, filter: { must } });
+    return JSON.stringify(r.points.map((p) => toRecord(p)), null, 2);
+  }
   requireEmbedConfig();
   const vector = await embed(query);
-  const capped = Math.min(Math.max(1, limit), MAX_SEARCH_LIMIT);
-  const r = await qdrant().query(getConfig("COLLECTION"), { query: vector, limit: capped, with_payload: true, filter: projectFilter(project) });
+  const r = await qdrant().query(getConfig("COLLECTION"), { query: vector, limit: capped, with_payload: true, filter });
   return JSON.stringify(r.points.map((p) => ({ ...toRecord(p), score: p.score })), null, 2);
 }
 
-export async function listMemories(limit: number = 100, offset?: string, project?: string) {
+export async function listMemories(limit: number = 100, offset?: string, project?: string, source?: string) {
   const capped = Math.min(Math.max(1, limit), MAX_LIST_LIMIT);
-  const r = await qdrant().scroll(getConfig("COLLECTION"), { limit: capped, offset, with_payload: true, filter: projectFilter(project) });
+  const r = await qdrant().scroll(getConfig("COLLECTION"), { limit: capped, offset, with_payload: true, filter: payloadFilter(project, source) });
   return JSON.stringify({ memories: r.points.map((p) => toRecord(p)), next_offset: r.next_page_offset }, null, 2);
 }
 
@@ -445,6 +576,62 @@ export async function getStats() {
   const vectorBytes = (pointsCount * (vectorSize(r) ?? 0) * 4) || 0;
   stats.size_bytes = textBytes + vectorBytes;
   return JSON.stringify(stats, null, 2);
+}
+
+export interface ReviewStaleOptions {
+  project?: string;
+  source?: string;
+  days?: number;
+  older_than_days?: number;
+  limit?: number;
+}
+
+export async function reviewStale(opts: ReviewStaleOptions = {}) {
+  const days = Math.max(1, opts.days ?? 7);
+  const olderThanDays = Math.max(1, opts.older_than_days ?? 90);
+  const limit = Math.min(Math.max(1, opts.limit ?? 50), MAX_SEARCH_LIMIT);
+  const now = Date.now();
+  const dayMs = 86_400_000;
+  const filter = payloadFilter(opts.project, opts.source);
+
+  const expired: Record<string, unknown>[] = [];
+  const expiringSoon: Record<string, unknown>[] = [];
+  const olderThan: Record<string, unknown>[] = [];
+  let checked = 0;
+
+  let offset: string | number | Record<string, unknown> | null | undefined;
+  do {
+    const page = await qdrant().scroll(getConfig("COLLECTION"), { limit: MAX_LIST_LIMIT, offset, with_payload: true, filter });
+    for (const p of page.points) {
+      checked++;
+      const rec = toRecord(p);
+      const preview = rec.text.length > 120 ? rec.text.slice(0, 120) + "..." : rec.text;
+      const expires = rec.expires_at ? Date.parse(rec.expires_at) : NaN;
+      if (!isNaN(expires)) {
+        if (expires <= now && expired.length < limit) {
+          expired.push({ id: rec.id, text: preview, expires_at: rec.expires_at, days_overdue: Math.floor((now - expires) / dayMs) });
+        } else if (expires > now && expires - now <= days * dayMs && expiringSoon.length < limit) {
+          expiringSoon.push({ id: rec.id, text: preview, expires_at: rec.expires_at, days_left: Math.ceil((expires - now) / dayMs) });
+        }
+      }
+      const created = rec.created_at ? Date.parse(rec.created_at) : NaN;
+      if (!isNaN(created) && now - created > olderThanDays * dayMs && olderThan.length < limit) {
+        olderThan.push({ id: rec.id, text: preview, created_at: rec.created_at, age_days: Math.floor((now - created) / dayMs) });
+      }
+    }
+    offset = page.next_page_offset;
+  } while (offset !== null && offset !== undefined);
+
+  return JSON.stringify({
+    report_only: true,
+    checked,
+    buckets: {
+      expired: { count: expired.length, memories: expired },
+      [`expiring_soon_${days}d`]: { count: expiringSoon.length, memories: expiringSoon },
+      [`older_than_${olderThanDays}d`]: { count: olderThan.length, memories: olderThan },
+    },
+    note: "Report only — no memories were modified. Memories may appear in multiple buckets.",
+  }, null, 2);
 }
 
 export async function verifyCollection(): Promise<{ exists: boolean; size?: number; configured: number; ok: boolean; message: string }> {
