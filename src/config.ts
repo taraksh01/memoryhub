@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync, renameSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -7,6 +7,7 @@ export interface MemoryHubConfig {
   collection?: string;
   vector_size?: number;
   retry_delay_ms?: number;
+  api_token?: string;
   llm?: { model?: string; base_url?: string; api_key?: string };
   embedder?: { model?: string; base_url?: string; api_key?: string };
   dedup?: { enabled?: boolean; threshold?: number; skip_threshold?: number };
@@ -55,7 +56,7 @@ let lastCorruptWarned = false;
 
 const overrides: Record<string, string> = {};
 
-const VALID_KEYS = new Set(["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY", "RETRY_DELAY_MS", "DEDUP_ENABLED", "DEDUP_THRESHOLD", "DEDUP_SKIP_THRESHOLD"]);
+const VALID_KEYS = new Set(["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY", "RETRY_DELAY_MS", "DEDUP_ENABLED", "DEDUP_THRESHOLD", "DEDUP_SKIP_THRESHOLD", "API_TOKEN"]);
 
 const DEFAULTS: Record<string, string> = {
   QDRANT_URL: "http://localhost:6333",
@@ -71,6 +72,7 @@ const DEFAULTS: Record<string, string> = {
   DEDUP_ENABLED: "true",
   DEDUP_THRESHOLD: "0.85",
   DEDUP_SKIP_THRESHOLD: "0.99",
+  API_TOKEN: "",
 };
 
 function envValue(key: string): string | undefined {
@@ -89,6 +91,7 @@ function envValue(key: string): string | undefined {
     case "DEDUP_ENABLED": return e.MEMORYHUB_DEDUP_ENABLED;
     case "DEDUP_THRESHOLD": { const v = e.MEMORYHUB_DEDUP_THRESHOLD; const n = Number(v); return v !== undefined && !isNaN(n) ? String(n) : undefined; }
     case "DEDUP_SKIP_THRESHOLD": { const v = e.MEMORYHUB_DEDUP_SKIP_THRESHOLD; const n = Number(v); return v !== undefined && !isNaN(n) ? String(n) : undefined; }
+    case "API_TOKEN": return e.MEMORYHUB_API_TOKEN;
   }
   return undefined;
 }
@@ -110,6 +113,7 @@ function fileValue(key: string): string | undefined {
     case "DEDUP_ENABLED": return typeof c.dedup?.enabled === "boolean" ? String(c.dedup.enabled) : undefined;
     case "DEDUP_THRESHOLD": return typeof c.dedup?.threshold === "number" ? String(c.dedup.threshold) : undefined;
     case "DEDUP_SKIP_THRESHOLD": return typeof c.dedup?.skip_threshold === "number" ? String(c.dedup.skip_threshold) : undefined;
+    case "API_TOKEN": return c.api_token;
   }
   return undefined;
 }
@@ -160,7 +164,7 @@ export function validateValue(key: string, value: string): void {
   }
 }
 
-function isConfigPath(key: string): key is "QDRANT_URL" | "COLLECTION" | "VECTOR_SIZE" | "LLM_MODEL" | "LLM_BASE" | "LLM_KEY" | "EMBED_MODEL" | "EMBED_BASE" | "EMBED_KEY" | "RETRY_DELAY_MS" | "DEDUP_ENABLED" | "DEDUP_THRESHOLD" | "DEDUP_SKIP_THRESHOLD" {
+function isConfigPath(key: string): key is "QDRANT_URL" | "COLLECTION" | "VECTOR_SIZE" | "LLM_MODEL" | "LLM_BASE" | "LLM_KEY" | "EMBED_MODEL" | "EMBED_BASE" | "EMBED_KEY" | "RETRY_DELAY_MS" | "DEDUP_ENABLED" | "DEDUP_THRESHOLD" | "DEDUP_SKIP_THRESHOLD" | "API_TOKEN" {
   return VALID_KEYS.has(key);
 }
 
@@ -179,6 +183,7 @@ function applyKeyToConfig(config: MemoryHubConfig, key: string, value: string): 
     case "DEDUP_ENABLED": config.dedup = { ...config.dedup, enabled: value === "true" }; break;
     case "DEDUP_THRESHOLD": config.dedup = { ...config.dedup, threshold: Number(value) }; break;
     case "DEDUP_SKIP_THRESHOLD": config.dedup = { ...config.dedup, skip_threshold: Number(value) }; break;
+    case "API_TOKEN": config.api_token = value; break;
   }
 }
 
@@ -191,20 +196,25 @@ function persistPath(): string {
 export function persistConfig(key: string, value: string): string {
   if (!isConfigPath(key)) throw new Error(`Unknown config key "${key}". Valid keys: ${[...VALID_KEYS].join(", ")}`);
   validateValue(key, value);
-  const path = persistPath();
+  const path = fileSource?.path ?? persistPath();
   let config: MemoryHubConfig = {};
   try { config = JSON.parse(readFileSync(path, "utf-8")); } catch { /* start fresh if missing or corrupt */ }
   applyKeyToConfig(config, key, value);
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n");
+  writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
   renameSync(tmp, path);
-  if (fileSource?.path === path || fileSource === null) fileSource = { path, config };
+  chmodSync(path, 0o600);
+  fileSource = { path, config };
   return path;
 }
 
 export function setConfig(key: string, value: string): void {
   if (!VALID_KEYS.has(key)) throw new Error(`Unknown config key "${key}". Valid keys: ${[...VALID_KEYS].join(", ")}`);
+  if (key === "API_TOKEN" && value === "") {
+    delete overrides[key];
+    return;
+  }
   validateValue(key, value);
   overrides[key] = value;
 }
@@ -224,7 +234,7 @@ export function requireEmbedConfig(): void {
 }
 
 export function getAllConfig(): Record<string, string> {
-  const sensitive = new Set(["LLM_KEY", "EMBED_KEY"]);
+  const sensitive = new Set(["LLM_KEY", "EMBED_KEY", "API_TOKEN"]);
   const result: Record<string, string> = {};
   for (const k of VALID_KEYS) {
     const v = getConfig(k);
