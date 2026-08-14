@@ -47,6 +47,17 @@ function checkAuth(req: IncomingMessage, res: ServerResponse): boolean {
   return true;
 }
 
+function enforceBodyLimit(req: IncomingMessage, res: ServerResponse): void {
+  let bytes = 0;
+  req.on("data", (chunk: Buffer) => {
+    bytes += chunk.length;
+    if (bytes > MAX_BODY_BYTES) {
+      if (!res.headersSent) res.writeHead(413).end("Payload too large");
+      req.destroy();
+    }
+  });
+}
+
 export function createHttpServer(serverFactory: () => McpServer, options: HttpServerOptions = {}): HttpHandle {
   const sessions = new Map<string, Session>();
   const idleMs = options.sessionIdleMs ?? DEFAULT_SESSION_IDLE_MS;
@@ -57,6 +68,7 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         res.writeHead(413).end("Payload too large");
         return;
       }
+      if (req.method === "POST" && !req.headers["content-length"]) enforceBodyLimit(req, res);
       if (!checkAuth(req, res)) return;
       if (req.method === "GET" && req.url === "/mcp") {
         const sessionId = sessionIdFrom(req);
@@ -106,7 +118,8 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         res.writeHead(404).end("Not found");
       }
     } catch (e) {
-      if (!res.headersSent) res.writeHead(500).end(e instanceof Error ? e.message : "Internal error");
+      console.error("memoryhub: request error: " + (e instanceof Error ? e.message : String(e)));
+      if (!res.headersSent) res.writeHead(500).end("Internal error");
     }
   });
 
