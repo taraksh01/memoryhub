@@ -195,11 +195,15 @@ function persistPath(): string {
 
 export function persistConfig(key: string, value: string): string {
   if (!isConfigPath(key)) throw new Error(`Unknown config key "${key}". Valid keys: ${[...VALID_KEYS].join(", ")}`);
-  validateValue(key, value);
   const path = fileSource?.path ?? persistPath();
   let config: MemoryHubConfig = {};
   try { config = JSON.parse(readFileSync(path, "utf-8")); } catch { /* start fresh if missing or corrupt */ }
-  applyKeyToConfig(config, key, value);
+  if (key === "API_TOKEN" && value === "") {
+    delete config.api_token;
+  } else {
+    validateValue(key, value);
+    applyKeyToConfig(config, key, value);
+  }
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });

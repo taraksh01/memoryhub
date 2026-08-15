@@ -263,6 +263,16 @@ test("API_TOKEN is read from env and config file, and masked", async () => {
   assert.equal(c2.getConfig("API_TOKEN"), "persisted-token-12345678");
 });
 
+test("persistConfig with empty API_TOKEN removes it from the config file", async () => {
+  const file = tempConfigFile({ api_token: "old-token-12345678", collection: "keep" });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  c.persistConfig("API_TOKEN", "");
+  const onDisk = JSON.parse(readFileSync(file, "utf-8"));
+  assert.equal(onDisk.api_token, undefined);
+  assert.equal(onDisk.collection, "keep");
+  assert.equal(c.getConfig("API_TOKEN"), "");
+});
+
 test("persistConfig merges into an existing config file", async () => {
   const file = tempConfigFile({ qdrant: { url: "http://keep:6333" }, llm: { model: "old" } });
   const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
