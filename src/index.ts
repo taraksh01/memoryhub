@@ -150,7 +150,7 @@ async function ensureQdrant(): Promise<void> {
     const configPath = join(MEMORYHUB_DIR, "qdrant.yaml");
     const storagePath = join(MEMORYHUB_DIR, "qdrant-storage");
     mkdirSync(MEMORYHUB_DIR, { recursive: true });
-    writeFileSync(configPath, `storage:\n  storage_path: ${storagePath}\nservice:\n  http_port: 6333\n  grpc_port: 6334\ntelemetry_disabled: true\n`);
+    writeFileSync(configPath, `storage:\n  storage_path: ${JSON.stringify(storagePath)}\nservice:\n  http_port: 6333\n  grpc_port: 6334\ntelemetry_disabled: true\n`);
     const child = spawn("qdrant", ["--config-path", configPath, "--disable-telemetry"], { detached: true, stdio: "ignore" });
     child.on("error", () => {});
     child.unref();
