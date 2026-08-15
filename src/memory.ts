@@ -1,14 +1,33 @@
-import { QdrantClient } from "@qdrant/js-client-rest";
+import { QdrantClient, QdrantClientResourceExhaustedError } from "@qdrant/js-client-rest";
 import { createHash, randomUUID } from "node:crypto";
 import { getConfig, requireEmbedConfig } from "./config.js";
 
 let _qdrant: QdrantClient | null = null;
 let _qdrantUrl = "";
 
+async function qdrantRetry<T>(call: () => Promise<T>): Promise<T> {
+  const delay = Number(getConfig("RETRY_DELAY_MS")) || 1000;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await call();
+    } catch (e) {
+      if (attempt >= 3 || !(e instanceof QdrantClientResourceExhaustedError)) throw e;
+      await new Promise((r) => setTimeout(r, delay * attempt));
+    }
+  }
+}
+
 function qdrant(): QdrantClient {
   const url = getConfig("QDRANT_URL");
   if (!_qdrant || url !== _qdrantUrl) {
-    _qdrant = new QdrantClient({ url, timeout: 30_000 });
+    const client = new QdrantClient({ url, timeout: 30_000 });
+    _qdrant = new Proxy(client, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (typeof v !== "function") return v;
+        return (...args: unknown[]) => qdrantRetry(() => v.apply(target, args) as Promise<unknown>);
+      },
+    }) as QdrantClient;
     _qdrantUrl = url;
   }
   return _qdrant;
@@ -166,6 +185,9 @@ export async function ensureCollection() {
   const cols = await qdrant().getCollections();
   const colName = getConfig("COLLECTION");
   const cfgSize = Number(getConfig("VECTOR_SIZE")) || 768;
+  if (!Number.isInteger(cfgSize) || cfgSize <= 0) {
+    throw new Error(`VECTOR_SIZE must be a positive integer, got "${getConfig("VECTOR_SIZE")}"`);
+  }
   const existing = cols.collections.find(c => c.name === colName);
   if (!existing) {
     await qdrant().createCollection(colName, {
@@ -290,7 +312,11 @@ function legacyIdToUuid(id: string): string {
 }
 
 function qdrantId(id: string): string | number {
-  if (/^\d+$/.test(id)) return Number(id);
+  if (/^\d+$/.test(id)) {
+    const n = Number(id);
+    if (Number.isSafeInteger(n) && String(n) === id) return n;
+    return legacyIdToUuid(id);
+  }
   if (UUID_RE.test(id)) return id;
   return legacyIdToUuid(id);
 }
@@ -314,8 +340,8 @@ export function mergeTexts(oldText: string, newText: string): string {
   return parts.join(" ");
 }
 
-async function findDuplicate(fact: string, vector: number[], project?: string): Promise<{ id: string; text: string; score: number } | null> {
-  const r = await qdrant().query(getConfig("COLLECTION"), { query: vector, limit: 1, with_payload: true, filter: payloadFilter(project) });
+async function findDuplicate(fact: string, vector: number[], project?: string, source?: string): Promise<{ id: string; text: string; score: number } | null> {
+  const r = await qdrant().query(getConfig("COLLECTION"), { query: vector, limit: 1, with_payload: true, filter: payloadFilter(project, source) });
   const top = r.points[0];
   if (!top || typeof top.score !== "number") return null;
   return { id: String(top.id), text: String(top.payload?.text ?? ""), score: top.score };
@@ -376,7 +402,7 @@ export async function addMemoriesRaw(text: string, project?: string, opts: AddOp
     const vector = await embed(fact);
     const run = async () => {
       if (dedupEnabled) {
-        const dup = await findDuplicate(fact, vector, project);
+        const dup = await findDuplicate(fact, vector, project, opts.source);
         if (dup) {
           const action = decideAction(dup.score, threshold, skipThreshold);
           if (action === "skipped") {
@@ -398,7 +424,7 @@ export async function addMemoriesRaw(text: string, project?: string, opts: AddOp
           if (typeof oldPayload.source === "string") payload.source = oldPayload.source;
           if (oldPayload.importance !== undefined) payload.importance = oldPayload.importance;
           if (typeof oldPayload.expires_at === "string") payload.expires_at = oldPayload.expires_at;
-          await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id: dup.id, vector: mergedVector, payload }], wait: true });
+          await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id: qdrantId(dup.id), vector: mergedVector, payload }], wait: true });
           outcomes.push({ id: dup.id, text: mergedText, action: "merged" });
           return;
         }
@@ -461,13 +487,20 @@ export async function batchAddMemories(items: BatchItem[]) {
 export async function exportMemories(project?: string, source?: string) {
   const filter = payloadFilter(project, source);
   const records: MemoryRecord[] = [];
+  let truncated = false;
   let offset: string | number | Record<string, unknown> | null | undefined;
   do {
     const page = await qdrant().scroll(getConfig("COLLECTION"), { limit: MAX_LIST_LIMIT, offset, with_payload: true, filter });
-    records.push(...page.points.map((p) => toRecord(p)));
+    for (const p of page.points) {
+      if (records.length >= MAX_STATS_SCAN) { truncated = true; break; }
+      records.push(toRecord(p));
+    }
+    if (truncated) break;
     offset = page.next_page_offset;
   } while (offset !== null && offset !== undefined);
-  return JSON.stringify({ exported_at: nowIso(), count: records.length, memories: records }, null, 2);
+  const out: Record<string, unknown> = { exported_at: nowIso(), count: records.length, memories: records };
+  if (truncated) out.truncated = true;
+  return JSON.stringify(out, null, 2);
 }
 
 const IMPORT_CONCURRENCY = 5;
@@ -753,7 +786,9 @@ export async function reviewStale(opts: ReviewStaleOptions = {}) {
       [`expiring_soon_${days}d`]: { count: expiringTotal, memories: expiringSoon },
       [`older_than_${olderThanDays}d`]: { count: olderTotal, memories: olderThan },
     },
-    note: "Report only — no memories were modified. Memories may appear in multiple buckets. Bucket counts are exact; the memories list is capped at the limit.",
+    note: truncated
+      ? `Report only — no memories were modified. Scan capped at ${MAX_STATS_SCAN} points; counts and lists are partial.`
+      : "Report only — no memories were modified. Memories may appear in multiple buckets. Bucket counts are exact; the memories list is capped at the limit.",
   }, null, 2);
 }
 

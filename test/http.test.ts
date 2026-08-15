@@ -512,6 +512,24 @@ test("update_config masks API_TOKEN in the response", async () => {
   }
 });
 
+test("update_config reports empty string for cleared secret, not a mask", async () => {
+  const { sessionId } = await initialize();
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 33,
+    method: "tools/call",
+    params: { name: "update_config", arguments: { key: "API_TOKEN", value: "" } },
+  }));
+  try {
+    const text = JSON.parse(message.result.content[0].text);
+    assert.equal(text.updated, "API_TOKEN");
+    assert.equal(text.value, "");
+    assert.equal(text.persisted, false);
+  } finally {
+    setConfig("API_TOKEN", "");
+  }
+});
+
 test("DELETE /mcp closes the session", async () => {
   const { sessionId } = await initialize();
   const del = await fetch(`${base}/mcp`, {

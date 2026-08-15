@@ -141,16 +141,37 @@ function qdrantProbe(): Promise<Response> {
   return fetch(qdrantHealthUrl(), { signal: AbortSignal.timeout(3000) });
 }
 
+function qdrantUrlParts(): { host: string; port: number } | null {
+  try {
+    const u = new URL(getConfig("QDRANT_URL"));
+    return { host: u.hostname.replace(/^\[|\]$/g, ""), port: Number(u.port) || 6333 };
+  } catch {
+    return null;
+  }
+}
+
+function isLoopback(host: string): boolean {
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0";
+}
+
 async function ensureQdrant(): Promise<void> {
   try {
     const res = await qdrantProbe();
     if (res.ok) return;
   } catch {}
+  const parts = qdrantUrlParts();
+  if (!parts || !isLoopback(parts.host)) {
+    throw new Error(
+      `Qdrant not reachable at ${getConfig("QDRANT_URL")} and it is not a localhost URL — start Qdrant manually and retry`
+    );
+  }
   try {
     const configPath = join(MEMORYHUB_DIR, "qdrant.yaml");
     const storagePath = join(MEMORYHUB_DIR, "qdrant-storage");
     mkdirSync(MEMORYHUB_DIR, { recursive: true });
-    writeFileSync(configPath, `storage:\n  storage_path: ${JSON.stringify(storagePath)}\nservice:\n  http_port: 6333\n  grpc_port: 6334\ntelemetry_disabled: true\n`);
+    const httpPort = parts.port;
+    const grpcPort = httpPort + 1;
+    writeFileSync(configPath, `storage:\n  storage_path: ${JSON.stringify(storagePath)}\nservice:\n  http_port: ${httpPort}\n  grpc_port: ${grpcPort}\ntelemetry_disabled: true\n`);
     const child = spawn("qdrant", ["--config-path", configPath, "--disable-telemetry"], { detached: true, stdio: "ignore" });
     child.on("error", () => {});
     child.unref();
@@ -424,6 +445,9 @@ if (cmd === "serve") {
     writeFileSync(PID_FILE, String(process.pid));
     const display = host === "::" || host === "0.0.0.0" || host === "" ? `http://localhost:${port}` : `http://${host}:${port}`;
     console.log(`memoryhub serving on ${display} (host ${host})`);
+    if ((host === "::" || host === "0.0.0.0" || host === "") && !getConfig("API_TOKEN")) {
+      console.error("memoryhub: warning: serving on all interfaces without an API token — set MEMORYHUB_API_TOKEN to protect the server");
+    }
   });
 
   const shutdown = async () => {

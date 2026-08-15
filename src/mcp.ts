@@ -175,7 +175,8 @@ export function createMcpServer(version: string): Server {
             result = JSON.stringify({ updated: a.key, value, persisted: true, path });
           } else {
             setConfig(a.key, a.value);
-            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? mask(a.value) : a.value;
+            const effective = getConfig(a.key);
+            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? (effective === "" ? "" : mask(effective)) : effective;
             result = JSON.stringify({ updated: a.key, value, persisted: false });
           }
           break;
@@ -188,7 +189,8 @@ export function createMcpServer(version: string): Server {
       const message = e instanceof Error ? e.message : String(e);
       const isValidation = message.includes("is required") || message.includes("must be");
       const isConfig = message.includes("config") || message.includes("Config");
-      const code = isValidation ? "VALIDATION_ERROR" : isConfig ? "CONFIG_ERROR" : "INTERNAL_ERROR";
+      const isNotFound = message.includes("not found");
+      const code = isValidation ? "VALIDATION_ERROR" : isConfig ? "CONFIG_ERROR" : isNotFound ? "NOT_FOUND" : "INTERNAL_ERROR";
       return { content: [{ type: "text", text: JSON.stringify({ error: message, code }) }], isError: true };
     }
   });
