@@ -172,9 +172,23 @@ if (cmd === "bootstrap") {
   cmd = "serve";
 }
 
+function resolveAutoStartBin(): string | null {
+  try {
+    const r = spawnSync(process.platform === "win32" ? "where" : "which", ["memoryhub"], { encoding: "utf-8" });
+    if (r.status === 0 && r.stdout) {
+      const hit = r.stdout.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0);
+      if (hit) return hit;
+    }
+  } catch {}
+  return null;
+}
+
 if (cmd === "install") {
   const startNow = process.argv.includes("--start");
   const scriptPath = process.argv[1];
+  const stableBin = resolveAutoStartBin();
+  const useStable = stableBin !== null && !!process.env.PATH;
+  const launch = useStable ? stableBin : scriptPath;
   const platform = process.platform;
   if (platform === "linux") {
     const service = `[Unit]
@@ -183,7 +197,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart="${process.execPath}" "${scriptPath}" bootstrap
+${useStable ? `ExecStart="${launch}" bootstrap\nEnvironment=PATH=${process.env.PATH}` : `ExecStart="${process.execPath}" "${launch}" bootstrap`}
 Restart=on-failure
 
 [Install]
@@ -208,11 +222,16 @@ WantedBy=default.target
   <string>com.memoryhub</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${process.execPath}</string>
-    <string>${scriptPath}</string>
+    ${useStable ? "" : `<string>${process.execPath}</string>`}
+    <string>${launch}</string>
     <string>bootstrap</string>
   </array>
-  <key>KeepAlive</key>
+  ${useStable ? `<key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${process.env.PATH}</string>
+  </dict>
+` : ""}  <key>KeepAlive</key>
   <true/>
   <key>RunAtLoad</key>
   <true/>
@@ -227,16 +246,27 @@ WantedBy=default.target
   } else if (platform === "win32") {
     const startupDir = join(os.homedir(), "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup");
     mkdirSync(startupDir, { recursive: true });
-    const vbs = `CreateObject("WScript.Shell").Run "${process.execPath} ${scriptPath} bootstrap", 0, False`;
-    writeFileSync(join(startupDir, "memoryhub.bat"), `@echo off\nstart /b "" "${process.execPath}" "${scriptPath}" bootstrap`);
+    let vbs: string;
+    let bat: string;
+    let args: string[];
+    if (useStable) {
+      vbs = `CreateObject("WScript.Shell").Run "cmd /c \\"\\"${launch}\\" bootstrap\\"", 0, False`;
+      bat = `@echo off\ncmd /c ""${launch}" bootstrap"`;
+      args = ["/c", launch, "bootstrap"];
+    } else {
+      vbs = `CreateObject("WScript.Shell").Run "${process.execPath} ${launch} bootstrap", 0, False`;
+      bat = `@echo off\nstart /b "" "${process.execPath}" "${launch}" bootstrap`;
+      args = [launch, "bootstrap"];
+    }
+    writeFileSync(join(startupDir, "memoryhub.bat"), bat);
     writeFileSync(join(startupDir, "memoryhub.vbs"), vbs);
     if (startNow) {
-      const child = spawn(process.execPath, [scriptPath, "bootstrap"], { detached: true, stdio: "ignore" });
+      const child = spawn(useStable ? "cmd" : process.execPath, args, { detached: true, stdio: "ignore" });
       child.unref();
     }
     console.log(startNow ? "memoryhub: installed in Windows Startup folder (started)" : "memoryhub: installed in Windows Startup folder");
   } else {
-    console.log("memoryhub: unsupported platform – add manual startup: " + process.execPath + " " + scriptPath + " bootstrap");
+    console.log("memoryhub: unsupported platform – add manual startup: " + (useStable ? launch : process.execPath + " " + launch) + " bootstrap");
   }
   process.exit(0);
 }
