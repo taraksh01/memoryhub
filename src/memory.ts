@@ -603,7 +603,6 @@ export async function listMemories(limit: number = 100, offset?: string, project
     offset,
     with_payload: true,
     filter: payloadFilter(project, source),
-    order_by: { key: "created_at", direction: "desc" },
   });
   return JSON.stringify({ memories: r.points.map((p) => toRecord(p)), next_offset: r.next_page_offset }, null, 2);
 }

@@ -454,7 +454,7 @@ test("review_stale reports exact counts even when the memories list is capped by
   assert.equal(text.buckets.expired.memories.length, 10);
 });
 
-test("list_memories requests newest-first ordering by created_at", async (t) => {
+test("list_memories returns results from Qdrant", async (t) => {
   const { sessionId } = await initialize();
   const originalFetch = globalThis.fetch.bind(globalThis);
   let scrollBody: any = null;
@@ -477,7 +477,7 @@ test("list_memories requests newest-first ordering by created_at", async (t) => 
     params: { name: "list_memories", arguments: { limit: 5 } },
   }));
   assert.ok(scrollBody, "scroll request body captured");
-  assert.deepEqual(scrollBody.order_by, { key: "created_at", direction: "desc" });
+  assert.equal(scrollBody.order_by, undefined, "order_by is not used (Qdrant scroll order_by returns empty results)");
   const text = JSON.parse(message.result.content[0].text);
   assert.deepEqual(text.memories, []);
 });
