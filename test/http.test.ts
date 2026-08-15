@@ -233,9 +233,9 @@ test("new tools reject invalid arguments", async () => {
     { name: "batch_add_memories", arguments: { items: [] } },
     { name: "batch_add_memories", arguments: { items: [{}] } },
     { name: "get_memories", arguments: { ids: [] } },
-    { name: "get_memories", arguments: { ids: ["not-a-uuid"] } },
-    { name: "get_memory", arguments: { memory_id: "not-a-uuid" } },
-    { name: "delete_memories", arguments: { ids: ["not-a-uuid"] } },
+    { name: "get_memories", arguments: { ids: [""] } },
+    { name: "get_memory", arguments: { memory_id: "" } },
+    { name: "delete_memories", arguments: { ids: [""] } },
     { name: "import_memories", arguments: {} },
     { name: "review_stale", arguments: { days: 0 } },
     { name: "search_memory", arguments: { query: "x", exact: "yes" } },
@@ -350,6 +350,46 @@ test("import_memories imports valid export data", async (t) => {
   const text = JSON.parse(message.result.content[0].text);
   assert.equal(text.imported, 1);
   assert.deepEqual(text.failed, []);
+});
+
+test("import_memories normalizes legacy string ids to deterministic UUIDs", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("EMBED_MODEL", "text-embedding-3-small");
+  setConfig("EMBED_BASE", "http://embed.test:1");
+  setConfig("EMBED_KEY", "k");
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  const storedIds: unknown[] = [];
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/embeddings")) {
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
+    }
+    if (u.includes("/points")) {
+      const body = JSON.parse(String(init?.body));
+      if (Array.isArray(body?.points)) storedIds.push(...body.points.map((p: { id: unknown }) => p.id));
+    }
+    return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+    });
+  });
+  const data = JSON.stringify({
+    memories: [{ id: "legacy-1", text: "a", project: "p" }, { id: "legacy-1", text: "b", project: "p" }],
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 62,
+    method: "tools/call",
+    params: { name: "import_memories", arguments: { data } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.imported, 2);
+  assert.equal(storedIds.length, 2);
+  const uuidRe = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+  assert.match(String(storedIds[0]), uuidRe);
+  assert.notEqual(String(storedIds[0]), "legacy-1");
+  assert.equal(String(storedIds[0]), String(storedIds[1]), "same legacy id maps to the same UUID");
 });
 
 test("review_stale returns a report without touching data", async (t) => {
