@@ -1,7 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { addMemories, searchMemories, listMemories, getMemory, getMemories, updateMemory, deleteMemories, deleteAllMemories, batchAddMemories, exportMemories, importMemories, reviewStale, getStats, healthCheck } from "./memory.js";
-import { getAllConfig, mask, setConfig, persistConfig } from "./config.js";
+import { getAllConfig, getConfig, mask, setConfig, persistConfig } from "./config.js";
 
 interface ToolArgs {
   text?: string;
@@ -31,10 +31,19 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-const ID_RE = /^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|\d+)$/;
+const MAX_IDS = 1000;
+const MAX_ID_LEN = 256;
 
 function assertValidId(id: string): void {
-  assert(ID_RE.test(id), `invalid memory id: ${id} (must be a UUID or numeric string)`);
+  assert(id.trim().length > 0, "invalid memory id: must be a non-empty string");
+  assert(id.length <= MAX_ID_LEN, `memory id too long (${id.length}, max ${MAX_ID_LEN})`);
+}
+
+function assertIdArray(ids: unknown): asserts ids is string[] {
+  assert(Array.isArray(ids) && ids.length > 0, "ids must be a non-empty array of strings");
+  assert(ids.every((id: unknown) => typeof id === "string"), "each id must be a string");
+  assert(ids.length <= MAX_IDS, `too many ids (${ids.length}, max ${MAX_IDS})`);
+  ids.forEach((id: string) => assertValidId(id));
 }
 
 export function createMcpServer(version: string): Server {
@@ -113,9 +122,7 @@ export function createMcpServer(version: string): Server {
           break;
         }
         case "get_memories": {
-          assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array of strings");
-          assert(a.ids.every((id: unknown) => typeof id === "string"), "each id must be a string");
-          a.ids.forEach((id: string) => assertValidId(id));
+          assertIdArray(a.ids);
           result = await getMemories(a.ids);
           break;
         }
@@ -127,9 +134,7 @@ export function createMcpServer(version: string): Server {
           break;
         }
         case "delete_memories": {
-          assert(Array.isArray(a.ids) && a.ids.length > 0, "ids must be a non-empty array of strings");
-          assert(a.ids.every((id: unknown) => typeof id === "string"), "each id must be a string");
-          a.ids.forEach((id: string) => assertValidId(id));
+          assertIdArray(a.ids);
           result = await deleteMemories(a.ids);
           break;
         }
@@ -165,11 +170,13 @@ export function createMcpServer(version: string): Server {
           assert(typeof a.value === "string", "value is required (string)");
           if (a.persist === true) {
             const path = persistConfig(a.key, a.value);
-            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? mask(a.value) : a.value;
+            const effective = getConfig(a.key);
+            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? mask(effective) : effective;
             result = JSON.stringify({ updated: a.key, value, persisted: true, path });
           } else {
             setConfig(a.key, a.value);
-            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? mask(a.value) : a.value;
+            const effective = getConfig(a.key);
+            const value = a.key === "LLM_KEY" || a.key === "EMBED_KEY" || a.key === "API_TOKEN" ? (effective === "" ? "" : mask(effective)) : effective;
             result = JSON.stringify({ updated: a.key, value, persisted: false });
           }
           break;
@@ -182,7 +189,8 @@ export function createMcpServer(version: string): Server {
       const message = e instanceof Error ? e.message : String(e);
       const isValidation = message.includes("is required") || message.includes("must be");
       const isConfig = message.includes("config") || message.includes("Config");
-      const code = isValidation ? "VALIDATION_ERROR" : isConfig ? "CONFIG_ERROR" : "INTERNAL_ERROR";
+      const isNotFound = message.includes("not found");
+      const code = isValidation ? "VALIDATION_ERROR" : isConfig ? "CONFIG_ERROR" : isNotFound ? "NOT_FOUND" : "INTERNAL_ERROR";
       return { content: [{ type: "text", text: JSON.stringify({ error: message, code }) }], isError: true };
     }
   });

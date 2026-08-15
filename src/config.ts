@@ -75,22 +75,55 @@ const DEFAULTS: Record<string, string> = {
   API_TOKEN: "",
 };
 
+const invalidReads = new Set<string>();
+
+function warnInvalid(key: string, value: string): void {
+  const k = `${key}=${value}`;
+  if (!invalidReads.has(k)) {
+    invalidReads.add(k);
+    console.error(`memoryhub: warning: ignoring invalid ${key} value "${value}"`);
+  }
+}
+
+function numValue(key: string, raw: string | undefined, ok: (n: number) => boolean): string | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!isNaN(n) && ok(n)) return String(n);
+  warnInvalid(key, raw);
+  return undefined;
+}
+
+function urlValue(key: string, raw: string | undefined, honorEmpty: boolean): string | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw && honorEmpty) return raw;
+  if (!raw) {
+    warnInvalid(key, raw);
+    return undefined;
+  }
+  try {
+    const p = new URL(raw);
+    if (p.protocol === "http:" || p.protocol === "https:") return raw;
+  } catch {}
+  warnInvalid(key, raw);
+  return undefined;
+}
+
 function envValue(key: string): string | undefined {
   const e = process.env;
   switch (key) {
-    case "QDRANT_URL": return e.QDRANT_URL;
+    case "QDRANT_URL": return urlValue("QDRANT_URL", e.QDRANT_URL, true);
     case "COLLECTION": return e.MEMORYHUB_COLLECTION;
-    case "VECTOR_SIZE": { const v = e.MEMORYHUB_VECTOR_SIZE; const n = Number(v); return v !== undefined && !isNaN(n) ? String(n) : undefined; }
+    case "VECTOR_SIZE": return numValue("VECTOR_SIZE", e.MEMORYHUB_VECTOR_SIZE, (n) => Number.isInteger(n) && n > 0);
     case "LLM_MODEL": return e.LLM_MODEL;
-    case "LLM_BASE": return e.LLM_BASE ?? e.LLM_BASE_URL;
+    case "LLM_BASE": return urlValue("LLM_BASE", e.LLM_BASE ?? e.LLM_BASE_URL, true);
     case "LLM_KEY": return e.LLM_KEY ?? e.LLM_API_KEY;
     case "EMBED_MODEL": return e.EMBED_MODEL;
-    case "EMBED_BASE": return e.EMBED_BASE ?? e.EMBED_BASE_URL;
+    case "EMBED_BASE": return urlValue("EMBED_BASE", e.EMBED_BASE ?? e.EMBED_BASE_URL, true);
     case "EMBED_KEY": return e.EMBED_KEY ?? e.EMBED_API_KEY;
-    case "RETRY_DELAY_MS": { const v = e.MEMORYHUB_RETRY_DELAY_MS; const n = Number(v); return v !== undefined && !isNaN(n) ? String(n) : undefined; }
+    case "RETRY_DELAY_MS": return numValue("RETRY_DELAY_MS", e.MEMORYHUB_RETRY_DELAY_MS, (n) => n >= 0);
     case "DEDUP_ENABLED": return e.MEMORYHUB_DEDUP_ENABLED;
-    case "DEDUP_THRESHOLD": { const v = e.MEMORYHUB_DEDUP_THRESHOLD; const n = Number(v); return v !== undefined && !isNaN(n) ? String(n) : undefined; }
-    case "DEDUP_SKIP_THRESHOLD": { const v = e.MEMORYHUB_DEDUP_SKIP_THRESHOLD; const n = Number(v); return v !== undefined && !isNaN(n) ? String(n) : undefined; }
+    case "DEDUP_THRESHOLD": return numValue("DEDUP_THRESHOLD", e.MEMORYHUB_DEDUP_THRESHOLD, (n) => n > 0 && n < 1);
+    case "DEDUP_SKIP_THRESHOLD": return numValue("DEDUP_SKIP_THRESHOLD", e.MEMORYHUB_DEDUP_SKIP_THRESHOLD, (n) => n > 0 && n < 1);
     case "API_TOKEN": return e.MEMORYHUB_API_TOKEN;
   }
   return undefined;
@@ -100,19 +133,19 @@ function fileValue(key: string): string | undefined {
   const c = fileSource?.config;
   if (!c) return undefined;
   switch (key) {
-    case "QDRANT_URL": return c.qdrant?.url;
+    case "QDRANT_URL": return urlValue("QDRANT_URL", c.qdrant?.url, false);
     case "COLLECTION": return c.collection;
-    case "VECTOR_SIZE": return typeof c.vector_size === "number" ? String(c.vector_size) : undefined;
+    case "VECTOR_SIZE": return typeof c.vector_size === "number" ? numValue("VECTOR_SIZE", String(c.vector_size), (n) => Number.isInteger(n) && n > 0) : undefined;
     case "LLM_MODEL": return c.llm?.model;
-    case "LLM_BASE": return c.llm?.base_url;
+    case "LLM_BASE": return urlValue("LLM_BASE", c.llm?.base_url, false);
     case "LLM_KEY": return c.llm?.api_key;
     case "EMBED_MODEL": return c.embedder?.model;
-    case "EMBED_BASE": return c.embedder?.base_url;
+    case "EMBED_BASE": return urlValue("EMBED_BASE", c.embedder?.base_url, false);
     case "EMBED_KEY": return c.embedder?.api_key;
-    case "RETRY_DELAY_MS": return typeof c.retry_delay_ms === "number" ? String(c.retry_delay_ms) : undefined;
+    case "RETRY_DELAY_MS": return typeof c.retry_delay_ms === "number" ? numValue("RETRY_DELAY_MS", String(c.retry_delay_ms), (n) => n >= 0) : undefined;
     case "DEDUP_ENABLED": return typeof c.dedup?.enabled === "boolean" ? String(c.dedup.enabled) : undefined;
-    case "DEDUP_THRESHOLD": return typeof c.dedup?.threshold === "number" ? String(c.dedup.threshold) : undefined;
-    case "DEDUP_SKIP_THRESHOLD": return typeof c.dedup?.skip_threshold === "number" ? String(c.dedup.skip_threshold) : undefined;
+    case "DEDUP_THRESHOLD": return typeof c.dedup?.threshold === "number" ? numValue("DEDUP_THRESHOLD", String(c.dedup.threshold), (n) => n > 0 && n < 1) : undefined;
+    case "DEDUP_SKIP_THRESHOLD": return typeof c.dedup?.skip_threshold === "number" ? numValue("DEDUP_SKIP_THRESHOLD", String(c.dedup.skip_threshold), (n) => n > 0 && n < 1) : undefined;
     case "API_TOKEN": return c.api_token;
   }
   return undefined;
@@ -195,11 +228,15 @@ function persistPath(): string {
 
 export function persistConfig(key: string, value: string): string {
   if (!isConfigPath(key)) throw new Error(`Unknown config key "${key}". Valid keys: ${[...VALID_KEYS].join(", ")}`);
-  validateValue(key, value);
   const path = fileSource?.path ?? persistPath();
   let config: MemoryHubConfig = {};
   try { config = JSON.parse(readFileSync(path, "utf-8")); } catch { /* start fresh if missing or corrupt */ }
-  applyKeyToConfig(config, key, value);
+  if (key === "API_TOKEN" && value === "") {
+    delete config.api_token;
+  } else {
+    validateValue(key, value);
+    applyKeyToConfig(config, key, value);
+  }
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });

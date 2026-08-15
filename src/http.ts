@@ -15,6 +15,7 @@ export interface HttpServerOptions {
 
 const DEFAULT_SESSION_IDLE_MS = 60 * 60 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
+const MAX_SESSIONS = 100;
 
 interface Session {
   server: McpServer;
@@ -60,6 +61,7 @@ function enforceBodyLimit(req: IncomingMessage, res: ServerResponse): void {
 
 export function createHttpServer(serverFactory: () => McpServer, options: HttpServerOptions = {}): HttpHandle {
   const sessions = new Map<string, Session>();
+  const pending = new Map<StreamableHTTPServerTransport, number>();
   const idleMs = options.sessionIdleMs ?? DEFAULT_SESSION_IDLE_MS;
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -87,16 +89,25 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
           return;
         }
         if (!session) {
+          if (sessions.size + pending.size >= MAX_SESSIONS) {
+            res.writeHead(429).end("Too many sessions");
+            return;
+          }
           const server = serverFactory();
           let created: StreamableHTTPServerTransport | undefined;
           created = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (id) => {
-              if (created) sessions.set(id, { server, transport: created, lastSeen: Date.now() });
+              if (created) {
+                pending.delete(created);
+                sessions.set(id, { server, transport: created, lastSeen: Date.now() });
+              }
             },
           });
           session = { server, transport: created, lastSeen: Date.now() };
+          pending.set(created, Date.now());
           created.onclose = () => {
+            pending.delete(created!);
             if (created?.sessionId) sessions.delete(created.sessionId);
           };
           await server.connect(created);
@@ -132,6 +143,13 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         console.error(`memoryhub: pruned idle session ${id}`);
       }
     }
+    for (const [t, created] of pending) {
+      if (now - created > idleMs) {
+        try { t.close(); } catch {}
+        pending.delete(t);
+        console.error("memoryhub: pruned uninitialized session");
+      }
+    }
   };
   const pruneTimer = setInterval(prune, Math.max(500, Math.min(60_000, idleMs / 2)));
   pruneTimer.unref();
@@ -146,6 +164,8 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
       } catch {}
     };
     await Promise.all([...sessions.values()].map(closeSession));
+    for (const t of pending.keys()) { try { await t.close(); } catch {} }
+    pending.clear();
     sessions.clear();
     await new Promise<void>((resolve) => {
       const timeout = setTimeout(() => { httpServer.closeAllConnections(); resolve(); }, 5000);

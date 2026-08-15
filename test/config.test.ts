@@ -263,6 +263,16 @@ test("API_TOKEN is read from env and config file, and masked", async () => {
   assert.equal(c2.getConfig("API_TOKEN"), "persisted-token-12345678");
 });
 
+test("persistConfig with empty API_TOKEN removes it from the config file", async () => {
+  const file = tempConfigFile({ api_token: "old-token-12345678", collection: "keep" });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  c.persistConfig("API_TOKEN", "");
+  const onDisk = JSON.parse(readFileSync(file, "utf-8"));
+  assert.equal(onDisk.api_token, undefined);
+  assert.equal(onDisk.collection, "keep");
+  assert.equal(c.getConfig("API_TOKEN"), "");
+});
+
 test("persistConfig merges into an existing config file", async () => {
   const file = tempConfigFile({ qdrant: { url: "http://keep:6333" }, llm: { model: "old" } });
   const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
@@ -341,4 +351,35 @@ test("unparseable config in chain falls back to next path without repeated warni
     console.error = orig;
   }
   assert.equal(errors.filter((e) => e.includes("ignoring unparseable")).length, 0);
+});
+
+test("invalid env numeric values fall back to defaults", async () => {
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = (m: unknown) => errors.push(String(m));
+  try {
+    const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_VECTOR_SIZE: "1.5" });
+    assert.equal(c.getConfig("VECTOR_SIZE"), "768");
+    c.getConfig("VECTOR_SIZE");
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(errors.filter((e) => e.includes("ignoring invalid VECTOR_SIZE")).length, 1);
+});
+
+test("invalid env URL values fall back to defaults", async () => {
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), QDRANT_URL: "not-a-url" });
+  assert.equal(c.getConfig("QDRANT_URL"), "http://localhost:6333");
+});
+
+test("invalid config file numeric values fall back to defaults", async () => {
+  const file = tempConfigFile({ vector_size: 1.5 });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  assert.equal(c.getConfig("VECTOR_SIZE"), "768");
+});
+
+test("invalid config file URL values fall back to defaults", async () => {
+  const file = tempConfigFile({ qdrant: { url: "not-a-url" } });
+  const c = await freshConfig({ MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")), MEMORYHUB_CONFIG: file });
+  assert.equal(c.getConfig("QDRANT_URL"), "http://localhost:6333");
 });

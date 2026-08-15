@@ -162,7 +162,7 @@ function mergeConfigs(base: MemoryHubConfig, extra: MemoryHubConfig): MemoryHubC
 export function writeConfigFile(path: string, config: MemoryHubConfig): void {
   const merged = mergeConfigs(readConfigFile(path), config);
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
+  const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(merged, null, 2) + "\n", { mode: 0o600 });
   renameSync(tmp, path);
   chmodSync(path, 0o600);
