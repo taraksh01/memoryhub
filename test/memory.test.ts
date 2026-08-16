@@ -131,7 +131,7 @@ test("extractMemories truncates long raw fallback", async (t) => {
   assert.ok(r[0].endsWith("... (truncated)"));
 });
 
-test("extractMemories propagates llm errors when raw fallback itself fails", async (t) => {
+test("extractMemories falls back to raw text when LLM fails", async (t) => {
   t.mock.method(globalThis, "fetch", async () => { throw new TypeError("fetch failed"); });
   const r = await mem.extractMemories("some text");
   assert.deepEqual(r, ["some text"]);

@@ -315,7 +315,7 @@ test("persistConfig survives reload (hot reload picks it up)", async () => {
   assert.equal(c.getConfig("COLLECTION"), "persisted-col");
 });
 
-test("unparseable config file warns only once", async () => {
+test("unparseable config file produces no warnings on reload", async () => {
   const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
   const file = join(dir, "config.json");
   writeFileSync(file, "{not valid json");

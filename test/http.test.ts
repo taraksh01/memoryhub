@@ -18,7 +18,7 @@ process.env.MEMORYHUB_RETRY_DELAY_MS = "1";
 
 const { createMcpServer } = await import("../src/mcp.js");
 const { createHttpServer } = await import("../src/http.js");
-const { setConfig } = await import("../src/config.js");
+const { setConfig, getConfig } = await import("../src/config.js");
 
 const { httpServer, close } = createHttpServer(() => createMcpServer("test"));
 await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
@@ -151,6 +151,7 @@ test("POST /mcp rejects oversized request bodies with 413", async () => {
 
 test("POST /mcp tools/call add_memories stores a memory", async (t) => {
   const { sessionId } = await initialize();
+  const saved = { QDRANT_URL: getConfig("QDRANT_URL"), EMBED_MODEL: getConfig("EMBED_MODEL"), EMBED_BASE: getConfig("EMBED_BASE"), EMBED_KEY: getConfig("EMBED_KEY"), LLM_MODEL: getConfig("LLM_MODEL"), LLM_BASE: getConfig("LLM_BASE"), LLM_KEY: getConfig("LLM_KEY") };
   setConfig("QDRANT_URL", "http://qdrant.test:6333");
   setConfig("EMBED_MODEL", "text-embedding-3-small");
   setConfig("EMBED_BASE", "http://embed.test:1");
@@ -158,36 +159,40 @@ test("POST /mcp tools/call add_memories stores a memory", async (t) => {
   setConfig("LLM_MODEL", "gpt-4o-mini");
   setConfig("LLM_BASE", "http://llm.test:1");
   setConfig("LLM_KEY", "k");
-  const originalFetch = globalThis.fetch.bind(globalThis);
-  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
-    const u = String(url);
-    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
-    if (u.includes("/chat/completions")) {
-      return new Response(JSON.stringify({ choices: [{ message: { content: '["remember pnpm"]' } }] }), { status: 200 });
-    }
-    if (u.includes("/embeddings")) {
-      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
-    }
-    return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
-      status: 200,
-      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+  try {
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+      if (u.includes("/chat/completions")) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: '["remember pnpm"]' } }] }), { status: 200 });
+      }
+      if (u.includes("/embeddings")) {
+        return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
     });
-  });
-  const { message } = await mcpPost(sessionId, JSON.stringify({
-    jsonrpc: "2.0",
-    id: 3,
-    method: "tools/call",
-    params: { name: "add_memories", arguments: { text: "Tarak prefers pnpm" } },
-  }));
-  const text = message.result.content[0].text;
-  const parsed = JSON.parse(text);
-  assert.equal(parsed.added, 1);
-  assert.equal(parsed.merged, 0);
-  assert.equal(parsed.skipped, 0);
-  assert.equal(parsed.memories.length, 1);
-  assert.equal(parsed.memories[0].text, "remember pnpm");
-  assert.equal(parsed.memories[0].action, "inserted");
-  assert.ok(parsed.memories[0].id);
+    const { message } = await mcpPost(sessionId, JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "add_memories", arguments: { text: "Tarak prefers pnpm" } },
+    }));
+    const text = message.result.content[0].text;
+    const parsed = JSON.parse(text);
+    assert.equal(parsed.added, 1);
+    assert.equal(parsed.merged, 0);
+    assert.equal(parsed.skipped, 0);
+    assert.equal(parsed.memories.length, 1);
+    assert.equal(parsed.memories[0].text, "remember pnpm");
+    assert.equal(parsed.memories[0].action, "inserted");
+    assert.ok(parsed.memories[0].id);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v) setConfig(k, v); }
+  }
 });
 
 test("tools/call returns structured error for invalid input", async () => {
@@ -262,6 +267,7 @@ test("new tools reject invalid arguments", async () => {
 
 test("batch_add_memories processes all items with per-item outcomes", async (t) => {
   const { sessionId } = await initialize();
+  const saved = { QDRANT_URL: getConfig("QDRANT_URL"), EMBED_MODEL: getConfig("EMBED_MODEL"), EMBED_BASE: getConfig("EMBED_BASE"), EMBED_KEY: getConfig("EMBED_KEY"), LLM_MODEL: getConfig("LLM_MODEL"), LLM_BASE: getConfig("LLM_BASE"), LLM_KEY: getConfig("LLM_KEY") };
   setConfig("QDRANT_URL", "http://qdrant.test:6333");
   setConfig("EMBED_MODEL", "text-embedding-3-small");
   setConfig("EMBED_BASE", "http://embed.test:1");
@@ -269,35 +275,39 @@ test("batch_add_memories processes all items with per-item outcomes", async (t) 
   setConfig("LLM_MODEL", "gpt-4o-mini");
   setConfig("LLM_BASE", "http://llm.test:1");
   setConfig("LLM_KEY", "k");
-  const originalFetch = globalThis.fetch.bind(globalThis);
-  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
-    const u = String(url);
-    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
-    if (u.includes("/chat/completions")) {
-      return new Response(JSON.stringify({ choices: [{ message: { content: '["fact one"]' } }] }), { status: 200 });
-    }
-    if (u.includes("/embeddings")) {
-      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
-    }
-    return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
-      status: 200,
-      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+  try {
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+      if (u.includes("/chat/completions")) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: '["fact one"]' } }] }), { status: 200 });
+      }
+      if (u.includes("/embeddings")) {
+        return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
     });
-  });
-  const { message } = await mcpPost(sessionId, JSON.stringify({
-    jsonrpc: "2.0",
-    id: 60,
-    method: "tools/call",
-    params: { name: "batch_add_memories", arguments: { items: [{ text: "one", project: "p1" }, { text: "two", project: "p2" }] } },
-  }));
-  const text = JSON.parse(message.result.content[0].text);
-  assert.equal(text.processed, 2);
-  assert.equal(text.items.length, 2);
-  assert.equal(text.items[0].index, 0);
-  assert.equal(text.items[0].added, 1);
-  assert.equal(text.items[1].index, 1);
-  assert.equal(text.items[1].added, 1);
-  assert.equal(text.items[0].memories[0].action, "inserted");
+    const { message } = await mcpPost(sessionId, JSON.stringify({
+      jsonrpc: "2.0",
+      id: 60,
+      method: "tools/call",
+      params: { name: "batch_add_memories", arguments: { items: [{ text: "one", project: "p1" }, { text: "two", project: "p2" }] } },
+    }));
+    const text = JSON.parse(message.result.content[0].text);
+    assert.equal(text.processed, 2);
+    assert.equal(text.items.length, 2);
+    assert.equal(text.items[0].index, 0);
+    assert.equal(text.items[0].added, 1);
+    assert.equal(text.items[1].index, 1);
+    assert.equal(text.items[1].added, 1);
+    assert.equal(text.items[0].memories[0].action, "inserted");
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v) setConfig(k, v); }
+  }
 });
 
 test("export_memories returns an export envelope", async (t) => {
@@ -592,7 +602,7 @@ test("idle sessions are pruned after the idle timeout", async () => {
     const sessionId = initRes.headers.get("mcp-session-id");
     assert.ok(sessionId);
     await initRes.text();
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 600));
     const after = await fetch(`${tinyBase}/mcp`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: ACCEPT, "mcp-session-id": sessionId! },
@@ -602,4 +612,541 @@ test("idle sessions are pruned after the idle timeout", async () => {
   } finally {
     await tiny.close();
   }
+});
+
+// --- Auth edge cases ---
+
+test("POST /mcp rejects Basic auth scheme", async () => {
+  setConfig("API_TOKEN", "test-token-abc123");
+  try {
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT, Authorization: "Basic dGVzdC10b2tlbi1hYmMxMjM=" },
+      body: INIT,
+    });
+    assert.equal(res.status, 401);
+  } finally {
+    setConfig("API_TOKEN", "");
+  }
+});
+
+test("GET /mcp without auth returns 401 when API_TOKEN is set", async () => {
+  setConfig("API_TOKEN", "test-token-abc123");
+  try {
+    const res = await fetch(`${base}/mcp`, { method: "GET" });
+    assert.equal(res.status, 401);
+  } finally {
+    setConfig("API_TOKEN", "");
+  }
+});
+
+test("DELETE /mcp without auth returns 401 when API_TOKEN is set", async () => {
+  setConfig("API_TOKEN", "test-token-abc123");
+  try {
+    const res = await fetch(`${base}/mcp`, {
+      method: "DELETE",
+      headers: { "mcp-session-id": "fake" },
+    });
+    assert.equal(res.status, 401);
+  } finally {
+    setConfig("API_TOKEN", "");
+  }
+});
+
+// --- MCP error-code classification ---
+
+test("unknown tool returns INTERNAL_ERROR", async () => {
+  const { sessionId } = await initialize();
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 200,
+    method: "tools/call",
+    params: { name: "nonexistent_tool", arguments: {} },
+  }));
+  assert.equal(message.result.isError, true);
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.code, "INTERNAL_ERROR");
+});
+
+test("error with 'config' in message returns CONFIG_ERROR", async (t) => {
+  const { sessionId } = await initialize();
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    throw new Error("Qdrant config is missing");
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 201,
+    method: "tools/call",
+    params: { name: "memory_stats", arguments: {} },
+  }));
+  assert.equal(message.result.isError, true);
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.code, "CONFIG_ERROR");
+});
+
+test("error with 'not found' returns NOT_FOUND", async (t) => {
+  const { sessionId } = await initialize();
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/points/")) {
+      return new Response(JSON.stringify({ result: { points: [] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    throw new Error("point not found");
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 202,
+    method: "tools/call",
+    params: { name: "get_memory", arguments: { memory_id: "does-not-exist" } },
+  }));
+  assert.equal(message.result.isError, true);
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.code, "NOT_FOUND");
+});
+
+// --- get_config / update_config persist:true ---
+
+test("get_config returns current effective values", async () => {
+  const { sessionId } = await initialize();
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 210,
+    method: "tools/call",
+    params: { name: "get_config", arguments: {} },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.ok(typeof text === "object");
+  assert.ok("COLLECTION" in text);
+});
+
+test("update_config persist:true returns persisted flag", async () => {
+  const { sessionId } = await initialize();
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 211,
+    method: "tools/call",
+    params: { name: "update_config", arguments: { key: "EMBED_MODEL", value: "test-persist-model", persist: true } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.updated, "EMBED_MODEL");
+  assert.equal(text.persisted, true);
+  assert.ok(typeof text.path === "string");
+});
+
+// --- Happy-path tests ---
+
+function mockQdrant(t: any, opts: { search?: any[]; scroll?: any[]; points?: any[]; upsert?: boolean }) {
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/embeddings")) {
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if ((u.includes("/collections") || new URL(u).pathname === "/") && !u.includes("/points")) {
+      if (new URL(u).pathname === "/") {
+        return new Response(JSON.stringify({ title: "qdrant - vector engine", version: "1.18.0" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+        });
+      }
+      return new Response(JSON.stringify({ result: { status: "green", optimizer_status: "ok", points_count: 5, config: { params: { vectors: { size: 2, distance: "Cosine" } } } } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    if (u.includes("/points/search") || u.includes("/points/query")) {
+      return new Response(JSON.stringify({ result: { points: opts.search ?? [] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    if (u.includes("/points/scroll")) {
+      return new Response(JSON.stringify({ result: { points: opts.scroll ?? [], next_page_offset: null } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    if (u.includes("/points/delete")) {
+      return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    if (u.includes("/points")) {
+      let body: any = {};
+      try {
+        if (typeof init?.body === "string") body = JSON.parse(init.body);
+        else if (init?.body instanceof Uint8Array) body = JSON.parse(new TextDecoder().decode(init.body));
+      } catch {}
+      if (body.ids) {
+        return new Response(JSON.stringify({ result: opts.points ?? body.ids.map((id: string) => ({ id, payload: {}, vector: [] })) }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+        });
+      }
+      return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    return new Response(JSON.stringify({ result: {} }), { status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" } });
+  });
+}
+
+test("search_memory returns results from Qdrant", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  setConfig("EMBED_MODEL", "text-embedding-3-small");
+  setConfig("EMBED_BASE", "http://embed.test:1");
+  setConfig("EMBED_KEY", "k");
+  mockQdrant(t, {
+    search: [{ id: "abc-123", payload: { text: "remember pnpm", project: "default" }, score: 0.95 }],
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 300,
+    method: "tools/call",
+    params: { name: "search_memory", arguments: { query: "pnpm" } },
+  }));
+  const raw = message.result.content[0].text;
+  const text = JSON.parse(raw);
+  assert.ok(Array.isArray(text));
+  assert.equal(text.length, 1);
+  assert.equal(text[0].text, "remember pnpm");
+  assert.equal(text[0].score, 0.95);
+});
+
+test("search_memory exact mode skips embedding", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  let embedCalled = false;
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/embeddings")) { embedCalled = true; throw new Error("should not embed"); }
+    if (u.includes("/points/scroll")) {
+      return new Response(JSON.stringify({ result: { points: [{ id: "x", payload: { text: "hello world" } }], next_page_offset: null } }), {
+        status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    return new Response(JSON.stringify({ result: {} }), { status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" } });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 301,
+    method: "tools/call",
+    params: { name: "search_memory", arguments: { query: "hello", exact: true } },
+  }));
+  assert.equal(embedCalled, false);
+  const text = JSON.parse(message.result.content[0].text);
+  assert.ok(Array.isArray(text));
+  assert.ok(text.length >= 1);
+});
+
+test("get_memory returns a single memory", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  mockQdrant(t, {
+    points: [{ id: "abc-123", payload: { text: "fact one", project: "p", created_at: "2026-01-01T00:00:00.000Z" } }],
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 302,
+    method: "tools/call",
+    params: { name: "get_memory", arguments: { memory_id: "abc-123" } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.id, "abc-123");
+  assert.equal(text.text, "fact one");
+  assert.equal(text.project, "p");
+});
+
+test("get_memories returns multiple memories", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  mockQdrant(t, {
+    points: [
+      { id: "a", payload: { text: "one" } },
+      { id: "b", payload: { text: "two" } },
+    ],
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 303,
+    method: "tools/call",
+    params: { name: "get_memories", arguments: { ids: ["a", "b"] } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.ok(Array.isArray(text.memories));
+  assert.equal(text.memories.length, 2);
+  assert.equal(text.memories[0].text, "one");
+  assert.equal(text.memories[1].text, "two");
+});
+
+test("delete_memories removes points by ID", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  const deletedIds: unknown[] = [];
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/embeddings")) {
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
+    }
+    if (u.includes("/points/delete")) {
+      let rawBody = "";
+      if (typeof init?.body === "string") rawBody = init.body;
+      else if (init?.body instanceof Uint8Array) rawBody = new TextDecoder().decode(init.body);
+      const body = JSON.parse(rawBody || "{}");
+      deletedIds.push(...(body?.points ?? body?.filter?.must?.[0]?.has_id ?? []));
+      return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    if ((u.includes("/collections") || new URL(u).pathname === "/") && !u.includes("/points")) {
+      if (new URL(u).pathname === "/") {
+        return new Response(JSON.stringify({ title: "qdrant - vector engine", version: "1.18.0" }), {
+          status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+        });
+      }
+      return new Response(JSON.stringify({ result: { status: "green", points_count: 2 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    if (u.includes("/points")) {
+      let body: any = {};
+      try {
+        if (typeof init?.body === "string") body = JSON.parse(init.body);
+        else if (init?.body instanceof Uint8Array) body = JSON.parse(new TextDecoder().decode(init.body));
+      } catch {}
+      if (body.ids) {
+        return new Response(JSON.stringify({ result: body.ids.map((id: string) => ({ id, payload: {}, vector: [] })) }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+        });
+      }
+      return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    return new Response(JSON.stringify({ result: {} }), { status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" } });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 304,
+    method: "tools/call",
+    params: { name: "delete_memories", arguments: { ids: ["id-1", "id-2"] } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.deleted, 2);
+  assert.equal(deletedIds.length, 2);
+});
+
+test("delete_all_memories deletes with filter", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  let deleteBody: any = null;
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/points/delete")) {
+      let rawBody = "";
+      if (typeof init?.body === "string") rawBody = init.body;
+      else if (init?.body instanceof Uint8Array) rawBody = new TextDecoder().decode(init.body);
+      deleteBody = rawBody ? JSON.parse(rawBody) : null;
+    }
+    return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1 } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+    });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 305,
+    method: "tools/call",
+    params: { name: "delete_all_memories", arguments: {} },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(typeof text.deleted, "number");
+  assert.ok(deleteBody, "delete request was made");
+});
+
+test("memory_stats returns collection info", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  const past = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
+  const page = Array.from({ length: 3 }, (_, i) => ({
+    id: `s-${i}`,
+    payload: { text: `stat fact ${i}`, created_at: past, project: "proj", source: "chat" },
+  }));
+  mockQdrant(t, { scroll: page });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 306,
+    method: "tools/call",
+    params: { name: "memory_stats", arguments: {} },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(typeof text.vectors_count, "number");
+  assert.ok(text.by_project);
+  assert.ok(text.by_source);
+});
+
+test("health_check returns ok when Qdrant is reachable", async (t) => {
+  const { sessionId } = await initialize();
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    return new Response(JSON.stringify({ result: { collections: [] } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+    });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 307,
+    method: "tools/call",
+    params: { name: "health_check", arguments: {} },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.status, "ok");
+  assert.equal(text.qdrant, "connected");
+});
+
+test("health_check returns degraded when Qdrant is unreachable", async (t) => {
+  const { sessionId } = await initialize();
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    throw new Error("ECONNREFUSED");
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 308,
+    method: "tools/call",
+    params: { name: "health_check", arguments: {} },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.equal(text.status, "degraded");
+  assert.equal(text.qdrant, "unreachable");
+});
+
+// --- Import/export edge cases ---
+
+test("import_memories reports per-item failures", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  setConfig("EMBED_MODEL", "text-embedding-3-small");
+  setConfig("EMBED_BASE", "http://embed.test:1");
+  setConfig("EMBED_KEY", "k");
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  let upsertBodies: any[] = [];
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if (u.includes("/embeddings")) {
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
+    }
+    if (u.includes("/points")) {
+      const body = JSON.parse(String(init?.body));
+      upsertBodies.push(body);
+      if (upsertBodies.length === 1) {
+        return new Response(JSON.stringify({ status: "error", operation_id: 1, status_detail: "fail" }), { status: 500, headers: { "Content-Type": "application/json", "server-version": "1.18.0" } });
+      }
+    }
+    return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+    });
+  });
+  const data = JSON.stringify({ memories: [{ text: "will fail on upsert" }, { text: "will succeed" }] });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 310,
+    method: "tools/call",
+    params: { name: "import_memories", arguments: { data } },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.ok(text.imported <= 2);
+  assert.ok(typeof text.failed === "object");
+});
+
+test("export_memories truncates at cap", async (t) => {
+  const { sessionId } = await initialize();
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  let scrollCalls = 0;
+  t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+    if ((u.includes("/collections") || new URL(u).pathname === "/") && !u.includes("/points")) {
+      if (new URL(u).pathname === "/") {
+        return new Response(JSON.stringify({ title: "qdrant - vector engine", version: "1.18.0" }), {
+          status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+        });
+      }
+      return new Response(JSON.stringify({ result: { status: "green", points_count: 100000 } }), {
+        status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    if (u.includes("/points/scroll")) {
+      scrollCalls++;
+      if (scrollCalls === 1) {
+        const points = Array.from({ length: 60000 }, (_, i) => ({ id: `p-${i}`, payload: { text: `f${i}` } }));
+        return new Response(JSON.stringify({ result: { points, next_page_offset: "page2" } }), {
+          status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+        });
+      }
+      return new Response(JSON.stringify({ result: { points: [], next_page_offset: null } }), {
+        status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    }
+    return new Response(JSON.stringify({ result: {} }), { status: 200, headers: { "Content-Type": "application/json", "server-version": "1.18.0" } });
+  });
+  const { message } = await mcpPost(sessionId, JSON.stringify({
+    jsonrpc: "2.0",
+    id: 311,
+    method: "tools/call",
+    params: { name: "export_memories", arguments: {} },
+  }));
+  const text = JSON.parse(message.result.content[0].text);
+  assert.ok(text.memories.length <= 50000);
+  assert.equal(text.truncated, true);
+});
+
+// --- Strengthen tools/list assertion ---
+
+test("tools/list returns all 16 tools with correct names", async () => {
+  const { sessionId } = await initialize();
+  const { message } = await mcpPost(sessionId, JSON.stringify({ jsonrpc: "2.0", id: 320, method: "tools/list", params: {} }));
+  const names = message.result.tools.map((t: { name: string }) => t.name).sort();
+  const expected = [
+    "add_memories", "batch_add_memories", "delete_all_memories",
+    "delete_memories", "export_memories", "get_config", "get_memory",
+    "get_memories", "health_check", "import_memories", "list_memories",
+    "memory_stats", "review_stale", "search_memory", "update_config",
+    "update_memory",
+  ].sort();
+  assert.equal(names.length, 16);
+  assert.deepEqual(names, expected);
 });
