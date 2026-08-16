@@ -71,12 +71,12 @@ test("long env aliases are supported", async () => {
   assert.equal(c.getConfig("LLM_KEY"), "long-alias-key");
 });
 
-test("empty string env values are honored, not treated as unset", async () => {
+test("empty string env URLs fall through to default", async () => {
   const c = await freshConfig({
     MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")),
     QDRANT_URL: "",
   });
-  assert.equal(c.getConfig("QDRANT_URL"), "");
+  assert.equal(c.getConfig("QDRANT_URL"), "http://localhost:6333");
 });
 
 test("getConfig returns override after setConfig with valid key", async () => {

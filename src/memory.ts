@@ -412,7 +412,7 @@ export async function addMemoriesRaw(text: string, project?: string, opts: AddOp
           if (action === "merged") {
             const mergedText = mergeTexts(dup.text, fact);
           const mergedVector = await embed(mergedText);
-          const existing = await qdrant().retrieve(getConfig("COLLECTION"), { ids: [dup.id], with_payload: true });
+          const existing = await qdrant().retrieve(getConfig("COLLECTION"), { ids: [qdrantId(dup.id)], with_payload: true });
           const oldPayload = (existing[0]?.payload ?? {}) as Record<string, unknown>;
           const payload: Record<string, unknown> = {
             ...basePayload(opts, now),
