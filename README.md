@@ -145,7 +145,7 @@ Every memory stores `created_at`, `updated_at`, and (when provided) `project`, `
 
 ## Retry
 
-LLM and embedding API calls retry up to 3 times on transient errors (rate limits, server errors) with exponential backoff.
+LLM and embedding API calls retry up to 3 attempts on transient errors (rate limits, server errors) with exponential backoff.
 
 ## CLI
 
