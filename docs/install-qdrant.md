@@ -49,7 +49,7 @@ Qdrant starts on `http://localhost:6333` by default. Keep this terminal window o
 Open a browser or run:
 
 ```bash
-curl http://localhost:6333/health
+curl http://localhost:6333/healthz
 ```
 
 You should see: `{"ok":true}`
@@ -60,6 +60,6 @@ You should see: `{"ok":true}`
 |---------|-----|
 | `docker: command not found` | Install Docker (see Option 1 above) |
 | `Permission denied` when running Docker | Add user to `docker` group and re-login |
-| Port 6333 already in use | Stop the other service, or change Qdrant's port (`docker run -p 6333:6333 qdrant/qdrant` handles this) |
+| Port 6333 already in use | Stop the other service (`lsof -ti :6333` to find it), or change Qdrant's port with `-p 6334:6333` |
 | Qdrant starts but Memory Hub can't connect | Make sure Qdrant is on `http://localhost:6333` and accessible |
-| `QLDrant` not found | Ensure it's in your PATH or use Docker instead |
+| `qdrant` not found | Ensure it's in your PATH or use Docker instead |

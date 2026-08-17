@@ -324,12 +324,16 @@ export async function runConfigure(argv: string[]): Promise<void> {
         }
       }
     }
-    const globalPath = join(MEMORYHUB_DIR, "config.json");
+    const globalPath = process.env.MEMORYHUB_CONFIG || join(MEMORYHUB_DIR, "config.json");
     writeConfigFile(globalPath, buildOrExit(values));
     console.log("✓ Saved to " + globalPath);
     if (await p.yesNo("Also write memoryhub.json in the current directory?", false)) {
       const projectPath = join(process.cwd(), "memoryhub.json");
-      writeConfigFile(projectPath, buildOrExit(values));
+      const projectConfig = buildOrExit(values);
+      delete projectConfig.llm?.api_key;
+      delete projectConfig.embedder?.api_key;
+      delete projectConfig.api_token;
+      writeConfigFile(projectPath, projectConfig);
       console.log("✓ Saved to " + projectPath);
     }
   } else {
@@ -341,7 +345,7 @@ export async function runConfigure(argv: string[]): Promise<void> {
         process.exit(1);
       }
     }
-    const globalPath = join(MEMORYHUB_DIR, "config.json");
+    const globalPath = process.env.MEMORYHUB_CONFIG || join(MEMORYHUB_DIR, "config.json");
     writeConfigFile(globalPath, buildConfig(values));
     console.log("✓ Saved to " + globalPath);
   }

@@ -111,14 +111,14 @@ function urlValue(key: string, raw: string | undefined, honorEmpty: boolean): st
 function envValue(key: string): string | undefined {
   const e = process.env;
   switch (key) {
-    case "QDRANT_URL": return urlValue("QDRANT_URL", e.QDRANT_URL, true);
+    case "QDRANT_URL": return urlValue("QDRANT_URL", e.QDRANT_URL, false);
     case "COLLECTION": return e.MEMORYHUB_COLLECTION;
     case "VECTOR_SIZE": return numValue("VECTOR_SIZE", e.MEMORYHUB_VECTOR_SIZE, (n) => Number.isInteger(n) && n > 0);
     case "LLM_MODEL": return e.LLM_MODEL;
-    case "LLM_BASE": return urlValue("LLM_BASE", e.LLM_BASE ?? e.LLM_BASE_URL, true);
+    case "LLM_BASE": return urlValue("LLM_BASE", e.LLM_BASE ?? e.LLM_BASE_URL, false);
     case "LLM_KEY": return e.LLM_KEY ?? e.LLM_API_KEY;
     case "EMBED_MODEL": return e.EMBED_MODEL;
-    case "EMBED_BASE": return urlValue("EMBED_BASE", e.EMBED_BASE ?? e.EMBED_BASE_URL, true);
+    case "EMBED_BASE": return urlValue("EMBED_BASE", e.EMBED_BASE ?? e.EMBED_BASE_URL, false);
     case "EMBED_KEY": return e.EMBED_KEY ?? e.EMBED_API_KEY;
     case "RETRY_DELAY_MS": return numValue("RETRY_DELAY_MS", e.MEMORYHUB_RETRY_DELAY_MS, (n) => n >= 0);
     case "DEDUP_ENABLED": return e.MEMORYHUB_DEDUP_ENABLED;

@@ -253,7 +253,10 @@ WantedBy=default.target
     <string>${process.env.PATH}</string>
   </dict>
 ` : ""}  <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
 </dict>
@@ -352,7 +355,7 @@ if (cmd === "start") {
       process.exit(1);
     }
     if (readPid() === child.pid) {
-      console.log(`memoryhub started (PID: %d) — logs: ${logPath}`, child.pid);
+      console.log(`memoryhub started (PID: ${child.pid}) — logs: ${logPath}`);
       process.exit(0);
     }
     await awaitDelay(200);
@@ -431,7 +434,7 @@ if (cmd === "serve") {
   const { httpServer, close } = createHttpServer(() => createMcpServer(version));
 
   const port = Number(process.env.MEMORYHUB_PORT) || 9876;
-  const host = process.env.MEMORYHUB_HOST || "::";
+  const host = process.env.MEMORYHUB_HOST || "127.0.0.1";
   httpServer.on("error", (err) => {
     if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
       console.error(`memoryhub: port ${port} already in use — is another instance running? Check "memoryhub status"`);

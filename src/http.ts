@@ -2,6 +2,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { randomUUID } from "node:crypto";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { getConfig } from "./config.js";
 
 export interface HttpHandle {
@@ -14,6 +15,7 @@ export interface HttpServerOptions {
 }
 
 const DEFAULT_SESSION_IDLE_MS = 60 * 60 * 1000;
+const PENDING_SESSION_TTL_MS = 30 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const MAX_SESSIONS = 100;
 
@@ -41,7 +43,13 @@ function checkAuth(req: IncomingMessage, res: ServerResponse): boolean {
     return false;
   }
   const [scheme, value] = header.split(" ");
-  if (scheme?.toLowerCase() !== "bearer" || value !== token) {
+  if (scheme?.toLowerCase() !== "bearer" || !value) {
+    unauthorized(res);
+    return false;
+  }
+  const tokenBuf = Buffer.from(token);
+  const valueBuf = Buffer.from(value);
+  if (tokenBuf.length !== valueBuf.length || !timingSafeEqual(tokenBuf, valueBuf)) {
     unauthorized(res);
     return false;
   }
@@ -110,7 +118,12 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
             pending.delete(created!);
             if (created?.sessionId) sessions.delete(created.sessionId);
           };
-          await server.connect(created);
+          try {
+            await server.connect(created);
+          } catch (e) {
+            pending.delete(created);
+            throw e;
+          }
         }
         session.lastSeen = Date.now();
         await session.transport.handleRequest(req, res);
@@ -144,7 +157,7 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
       }
     }
     for (const [t, created] of pending) {
-      if (now - created > idleMs) {
+      if (now - created > PENDING_SESSION_TTL_MS) {
         try { t.close(); } catch {}
         pending.delete(t);
         console.error("memoryhub: pruned uninitialized session");

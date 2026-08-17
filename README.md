@@ -36,9 +36,10 @@ memoryhub bootstrap
 
 Memory Hub needs three things:
 
-1. **Qdrant** — vector database ([install guide](docs/install-qdrant.md))
-2. **LLM API** — extracts facts from text (e.g. OpenAI, Anthropic, local Ollama)
-3. **Embedding API** — converts text to vectors (e.g. OpenAI `text-embedding-3-small`, local Ollama)
+1. **Node.js >= 24** — runtime
+2. **Qdrant** — vector database ([install guide](docs/install-qdrant.md))
+3. **LLM API** — extracts facts from text (e.g. OpenAI, Anthropic, local Ollama)
+4. **Embedding API** — converts text to vectors (e.g. OpenAI `text-embedding-3-small`, local Ollama)
 
 **Qdrant and the embedding API are required.** The LLM is optional: if it is unset or fails, the raw text is stored as-is instead of extracted facts. The embedding config is separate from the LLM config — it does not fall back to it (see config example below). `memoryhub configure` walks you through all of them.
 
@@ -145,7 +146,7 @@ Every memory stores `created_at`, `updated_at`, and (when provided) `project`, `
 
 ## Retry
 
-LLM and embedding API calls retry up to 3 times on transient errors (rate limits, server errors) with exponential backoff.
+LLM and embedding API calls retry up to 3 attempts on transient errors (rate limits, server errors) with exponential backoff.
 
 ## CLI
 

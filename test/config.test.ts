@@ -71,12 +71,12 @@ test("long env aliases are supported", async () => {
   assert.equal(c.getConfig("LLM_KEY"), "long-alias-key");
 });
 
-test("empty string env values are honored, not treated as unset", async () => {
+test("empty string env URLs fall through to default", async () => {
   const c = await freshConfig({
     MEMORYHUB_DIR: mkdtempSync(join(tmpdir(), "memoryhub-test-")),
     QDRANT_URL: "",
   });
-  assert.equal(c.getConfig("QDRANT_URL"), "");
+  assert.equal(c.getConfig("QDRANT_URL"), "http://localhost:6333");
 });
 
 test("getConfig returns override after setConfig with valid key", async () => {
@@ -315,7 +315,7 @@ test("persistConfig survives reload (hot reload picks it up)", async () => {
   assert.equal(c.getConfig("COLLECTION"), "persisted-col");
 });
 
-test("unparseable config file warns only once", async () => {
+test("unparseable config file produces no warnings on reload", async () => {
   const dir = mkdtempSync(join(tmpdir(), "memoryhub-test-"));
   const file = join(dir, "config.json");
   writeFileSync(file, "{not valid json");
