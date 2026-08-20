@@ -66,6 +66,19 @@ function enforceBodyLimit(req: IncomingMessage, res: ServerResponse): void {
   });
 }
 
+function lazyExpired(sessions: Map<string, Session>, sessionId: string | undefined, idleMs: number, now: number): Session | undefined {
+  if (!sessionId || idleMs <= 0) return sessionId ? sessions.get(sessionId) : undefined;
+  const s = sessions.get(sessionId);
+  if (!s) return undefined;
+  if (now - s.lastSeen >= idleMs) {
+    try { s.transport.close(); } catch {}
+    sessions.delete(sessionId);
+    console.error(`memoryhub: evicted idle session ${sessionId} (${now - s.lastSeen}ms idle)`);
+    return undefined;
+  }
+  return s;
+}
+
 export function createHttpServer(serverFactory: () => McpServer, options: HttpServerOptions = {}): HttpHandle {
   const sessions = new Map<string, Session>();
   const pending = new Map<StreamableHTTPServerTransport, number>();
@@ -81,7 +94,7 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
       if (!checkAuth(req, res)) return;
       if (req.method === "GET" && req.url === "/mcp") {
         const sessionId = sessionIdFrom(req);
-        const session = sessionId ? sessions.get(sessionId) : undefined;
+        const session = lazyExpired(sessions, sessionId, idleMs, Date.now());
         if (!session) {
           res.writeHead(400).end("Bad Request: Invalid or missing session ID");
           return;
@@ -90,7 +103,7 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         await session.transport.handleRequest(req, res);
       } else if (req.method === "POST" && req.url === "/mcp") {
         const sessionId = sessionIdFrom(req);
-        let session = sessionId ? sessions.get(sessionId) : undefined;
+        let session = lazyExpired(sessions, sessionId, idleMs, Date.now());
         if (sessionId && !session) {
           res.writeHead(404).end("Session not found");
           return;
@@ -143,7 +156,7 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         await session.transport.handleRequest(req, res);
       } else if (req.method === "DELETE" && req.url === "/mcp") {
         const sessionId = sessionIdFrom(req);
-        const session = sessionId ? sessions.get(sessionId) : undefined;
+        const session = lazyExpired(sessions, sessionId, idleMs, Date.now());
         if (!sessionId || !session) {
           res.writeHead(400).end("Bad Request: Invalid or missing session ID");
           return;
@@ -165,7 +178,7 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
     const now = Date.now();
     if (idleMs > 0) {
       for (const [id, s] of sessions) {
-        if (now - s.lastSeen > idleMs) {
+        if (now - s.lastSeen >= idleMs) {
           try { s.transport.close(); } catch {}
           sessions.delete(id);
           console.error(`memoryhub: pruned idle session ${id}`);

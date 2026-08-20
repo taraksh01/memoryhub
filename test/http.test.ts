@@ -614,6 +614,33 @@ test("idle sessions are pruned after the idle timeout", async () => {
   }
 });
 
+test("idle session is evicted lazily at request time, before the sweep", async () => {
+  const lazy = createHttpServer(() => createMcpServer("test"), { sessionIdleMs: 50 });
+  await new Promise<void>((resolve) => lazy.httpServer.listen(0, "127.0.0.1", resolve));
+  const p = (lazy.httpServer.address() as AddressInfo).port;
+  const b = `http://127.0.0.1:${p}`;
+  try {
+    const initRes = await fetch(`${b}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT },
+      body: INIT,
+    });
+    assert.equal(initRes.status, 200);
+    const sessionId = initRes.headers.get("mcp-session-id");
+    assert.ok(sessionId);
+    await initRes.text();
+    await new Promise((r) => setTimeout(r, 60));
+    const after = await fetch(`${b}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT, "mcp-session-id": sessionId! },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "tools/list", params: {} }),
+    });
+    assert.equal(after.status, 404, "request-time expiry returns 404 even before the sweep runs");
+  } finally {
+    await lazy.close();
+  }
+});
+
 test("sessions are not pruned when idle expiry is disabled", async () => {
   const noExpire = createHttpServer(() => createMcpServer("test"), { sessionIdleMs: 0 });
   await new Promise<void>((resolve) => noExpire.httpServer.listen(0, "127.0.0.1", resolve));
