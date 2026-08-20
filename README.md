@@ -107,6 +107,7 @@ Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `
 | `MEMORYHUB_DEDUP_THRESHOLD` | — | `0.85` | Similarity score ≥ this merges the new fact into the existing memory |
 | `MEMORYHUB_DEDUP_SKIP_THRESHOLD` | — | `0.99` | Similarity score ≥ this skips the new fact entirely (identical duplicate) |
 | `MEMORYHUB_API_TOKEN` | — | — | Optional bearer token. When set, the HTTP transport requires `Authorization: Bearer <token>` on every request (401 otherwise) |
+| `MEMORYHUB_SESSION_IDLE_MS` | — | `0` | Idle timeout for HTTP sessions in milliseconds. `0` disables idle pruning (sessions live until the client closes them or the server restarts; at capacity the least-recently-used session is evicted). Set a positive value (e.g. `900000` for 15 min) to expire sessions that go silent — clients should then send periodic MCP `ping` requests (a heartbeat) to keep the session alive, and must re-initialize on HTTP 404 |
 
 ## Memory Scopes
 
@@ -167,7 +168,7 @@ LLM and embedding API calls retry up to 3 attempts on transient errors (rate lim
 ## Transport Modes
 
 - **stdio** (default): Connect MCP clients via stdin/stdout
-- **Streamable HTTP**: `memoryhub serve` starts an HTTP server on port 9876 implementing the MCP Streamable HTTP transport (single `POST /mcp` endpoint, session management via `Mcp-Session-Id` header, `DELETE /mcp` to close a session). Clients must send `Accept: application/json, text/event-stream` on POST requests. The server binds to `::` **dual-stack** by default (accepts both IPv4 and IPv6) — set `MEMORYHUB_IPV6_ONLY=true` to restrict to IPv6 only, or `MEMORYHUB_HOST` to pick a specific address. Sessions idle for over 1 hour are pruned automatically.
+- **Streamable HTTP**: `memoryhub serve` starts an HTTP server on port 9876 implementing the MCP Streamable HTTP transport (single `POST /mcp` endpoint, session management via `Mcp-Session-Id` header, `DELETE /mcp` to close a session). Clients must send `Accept: application/json, text/event-stream` on POST requests. The server binds to `::` **dual-stack** by default (accepts both IPv4 and IPv6) — set `MEMORYHUB_IPV6_ONLY=true` to restrict to IPv6 only, or `MEMORYHUB_HOST` to pick a specific address. By default sessions are **not** pruned for idleness; when `MEMORYHUB_SESSION_IDLE_MS` is set, sessions that stay silent past the timeout are pruned and subsequent requests with the old session ID get `404` — clients must then re-initialize (send a fresh `initialize` without a session ID), per the MCP Streamable HTTP spec.
 
 Remote clients connect to `http://<host>:9876/mcp`. If `API_TOKEN` is set, every request must include `Authorization: Bearer <token>`; unauthenticated requests get `401`. Request bodies are capped at 5 MB (`413`).
 

@@ -11,6 +11,7 @@ export interface MemoryHubConfig {
   llm?: { model?: string; base_url?: string; api_key?: string };
   embedder?: { model?: string; base_url?: string; api_key?: string };
   dedup?: { enabled?: boolean; threshold?: number; skip_threshold?: number };
+  session_idle_ms?: number;
 }
 
 function env(key: string, fallback: string): string {
@@ -56,7 +57,7 @@ let lastCorruptWarned = false;
 
 const overrides: Record<string, string> = {};
 
-const VALID_KEYS = new Set(["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY", "RETRY_DELAY_MS", "DEDUP_ENABLED", "DEDUP_THRESHOLD", "DEDUP_SKIP_THRESHOLD", "API_TOKEN"]);
+const VALID_KEYS = new Set(["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY", "RETRY_DELAY_MS", "DEDUP_ENABLED", "DEDUP_THRESHOLD", "DEDUP_SKIP_THRESHOLD", "API_TOKEN", "SESSION_IDLE_MS"]);
 
 const DEFAULTS: Record<string, string> = {
   QDRANT_URL: "http://localhost:6333",
@@ -73,6 +74,7 @@ const DEFAULTS: Record<string, string> = {
   DEDUP_THRESHOLD: "0.85",
   DEDUP_SKIP_THRESHOLD: "0.99",
   API_TOKEN: "",
+  SESSION_IDLE_MS: "0",
 };
 
 const invalidReads = new Set<string>();
@@ -125,6 +127,7 @@ function envValue(key: string): string | undefined {
     case "DEDUP_THRESHOLD": return numValue("DEDUP_THRESHOLD", e.MEMORYHUB_DEDUP_THRESHOLD, (n) => n > 0 && n < 1);
     case "DEDUP_SKIP_THRESHOLD": return numValue("DEDUP_SKIP_THRESHOLD", e.MEMORYHUB_DEDUP_SKIP_THRESHOLD, (n) => n > 0 && n < 1);
     case "API_TOKEN": return e.MEMORYHUB_API_TOKEN;
+    case "SESSION_IDLE_MS": return numValue("SESSION_IDLE_MS", e.MEMORYHUB_SESSION_IDLE_MS, (n) => Number.isInteger(n) && n >= 0);
   }
   return undefined;
 }
@@ -147,6 +150,7 @@ function fileValue(key: string): string | undefined {
     case "DEDUP_THRESHOLD": return typeof c.dedup?.threshold === "number" ? numValue("DEDUP_THRESHOLD", String(c.dedup.threshold), (n) => n > 0 && n < 1) : undefined;
     case "DEDUP_SKIP_THRESHOLD": return typeof c.dedup?.skip_threshold === "number" ? numValue("DEDUP_SKIP_THRESHOLD", String(c.dedup.skip_threshold), (n) => n > 0 && n < 1) : undefined;
     case "API_TOKEN": return c.api_token;
+    case "SESSION_IDLE_MS": return typeof c.session_idle_ms === "number" ? numValue("SESSION_IDLE_MS", String(c.session_idle_ms), (n) => Number.isInteger(n) && n >= 0) : undefined;
   }
   return undefined;
 }
@@ -194,10 +198,15 @@ export function validateValue(key: string, value: string): void {
       if (isNaN(n) || n <= 0 || n >= 1) throw new Error(`${key} must be a number between 0 and 1, got "${value}"`);
       break;
     }
+    case "SESSION_IDLE_MS": {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0) throw new Error(`SESSION_IDLE_MS must be a non-negative integer (milliseconds, 0 = never expire), got "${value}"`);
+      break;
+    }
   }
 }
 
-function isConfigPath(key: string): key is "QDRANT_URL" | "COLLECTION" | "VECTOR_SIZE" | "LLM_MODEL" | "LLM_BASE" | "LLM_KEY" | "EMBED_MODEL" | "EMBED_BASE" | "EMBED_KEY" | "RETRY_DELAY_MS" | "DEDUP_ENABLED" | "DEDUP_THRESHOLD" | "DEDUP_SKIP_THRESHOLD" | "API_TOKEN" {
+function isConfigPath(key: string): key is "QDRANT_URL" | "COLLECTION" | "VECTOR_SIZE" | "LLM_MODEL" | "LLM_BASE" | "LLM_KEY" | "EMBED_MODEL" | "EMBED_BASE" | "EMBED_KEY" | "RETRY_DELAY_MS" | "DEDUP_ENABLED" | "DEDUP_THRESHOLD" | "DEDUP_SKIP_THRESHOLD" | "API_TOKEN" | "SESSION_IDLE_MS" {
   return VALID_KEYS.has(key);
 }
 
@@ -217,6 +226,7 @@ function applyKeyToConfig(config: MemoryHubConfig, key: string, value: string): 
     case "DEDUP_THRESHOLD": config.dedup = { ...config.dedup, threshold: Number(value) }; break;
     case "DEDUP_SKIP_THRESHOLD": config.dedup = { ...config.dedup, skip_threshold: Number(value) }; break;
     case "API_TOKEN": config.api_token = value; break;
+    case "SESSION_IDLE_MS": config.session_idle_ms = Number(value); break;
   }
 }
 

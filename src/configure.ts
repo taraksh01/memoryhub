@@ -24,7 +24,8 @@ Usage:
 
 Valid keys: QDRANT_URL, COLLECTION, VECTOR_SIZE, LLM_MODEL, LLM_BASE,
             LLM_KEY, EMBED_MODEL, EMBED_BASE, EMBED_KEY, RETRY_DELAY_MS,
-            DEDUP_ENABLED, DEDUP_THRESHOLD, DEDUP_SKIP_THRESHOLD, API_TOKEN
+            DEDUP_ENABLED, DEDUP_THRESHOLD, DEDUP_SKIP_THRESHOLD, API_TOKEN,
+            SESSION_IDLE_MS
 `;
 
 function applySet(opts: ConfigureOptions, pair: string) {
@@ -72,6 +73,7 @@ const FILE_KEY_MAP: Record<string, string> = {
   "dedup.threshold": "DEDUP_THRESHOLD",
   "dedup.skip_threshold": "DEDUP_SKIP_THRESHOLD",
   api_token: "API_TOKEN",
+  session_idle_ms: "SESSION_IDLE_MS",
 };
 
 function dotGet(obj: unknown, path: string): unknown {
@@ -127,6 +129,11 @@ export function buildConfig(values: Record<string, string>): MemoryHubConfig {
     if (values.EMBED_KEY) cfg.embedder.api_key = values.EMBED_KEY;
   }
   if (values.API_TOKEN) cfg.api_token = values.API_TOKEN;
+  if (values.SESSION_IDLE_MS) {
+    const n = Number(values.SESSION_IDLE_MS);
+    if (!Number.isInteger(n) || n < 0) throw new Error(`SESSION_IDLE_MS must be a non-negative integer, got "${values.SESSION_IDLE_MS}"`);
+    cfg.session_idle_ms = n;
+  }
   if (values.DEDUP_ENABLED || values.DEDUP_THRESHOLD || values.DEDUP_SKIP_THRESHOLD) {
     cfg.dedup = {};
     if (values.DEDUP_ENABLED) cfg.dedup.enabled = values.DEDUP_ENABLED === "true";
@@ -155,6 +162,7 @@ function mergeConfigs(base: MemoryHubConfig, extra: MemoryHubConfig): MemoryHubC
   if (extra.llm) out.llm = { ...base.llm, ...extra.llm };
   if (extra.embedder) out.embedder = { ...base.embedder, ...extra.embedder };
   if (extra.api_token !== undefined) out.api_token = extra.api_token;
+  if (extra.session_idle_ms !== undefined) out.session_idle_ms = extra.session_idle_ms;
   if (extra.dedup) out.dedup = { ...base.dedup, ...extra.dedup };
   return out;
 }

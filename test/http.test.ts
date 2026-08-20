@@ -9,7 +9,7 @@ const ENV_KEYS = [
   "MEMORYHUB_DIR", "MEMORYHUB_CONFIG", "QDRANT_URL", "MEMORYHUB_COLLECTION",
   "MEMORYHUB_VECTOR_SIZE", "MEMORYHUB_RETRY_DELAY_MS", "LLM_MODEL", "LLM_BASE",
   "LLM_BASE_URL", "LLM_KEY", "LLM_API_KEY", "EMBED_MODEL", "EMBED_BASE",
-  "EMBED_BASE_URL", "EMBED_KEY", "EMBED_API_KEY",
+  "EMBED_BASE_URL", "EMBED_KEY", "EMBED_API_KEY", "MEMORYHUB_SESSION_IDLE_MS",
 ];
 
 for (const k of ENV_KEYS) delete process.env[k];
@@ -611,6 +611,103 @@ test("idle sessions are pruned after the idle timeout", async () => {
     assert.equal(after.status, 404);
   } finally {
     await tiny.close();
+  }
+});
+
+test("sessions are not pruned when idle expiry is disabled", async () => {
+  const noExpire = createHttpServer(() => createMcpServer("test"), { sessionIdleMs: 0 });
+  await new Promise<void>((resolve) => noExpire.httpServer.listen(0, "127.0.0.1", resolve));
+  const p = (noExpire.httpServer.address() as AddressInfo).port;
+  const b = `http://127.0.0.1:${p}`;
+  try {
+    const initRes = await fetch(`${b}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT },
+      body: INIT,
+    });
+    assert.equal(initRes.status, 200);
+    const sessionId = initRes.headers.get("mcp-session-id");
+    assert.ok(sessionId);
+    await initRes.text();
+    await new Promise((r) => setTimeout(r, 600));
+    const after = await fetch(`${b}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT, "mcp-session-id": sessionId! },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 100, method: "tools/list", params: {} }),
+    });
+    assert.equal(after.status, 200);
+    await after.text();
+  } finally {
+    await noExpire.close();
+  }
+});
+
+test("SESSION_IDLE_MS config enables idle pruning", async () => {
+  setConfig("SESSION_IDLE_MS", "50");
+  try {
+    const cfg = createHttpServer(() => createMcpServer("test"));
+    await new Promise<void>((resolve) => cfg.httpServer.listen(0, "127.0.0.1", resolve));
+    const p = (cfg.httpServer.address() as AddressInfo).port;
+    const b = `http://127.0.0.1:${p}`;
+    try {
+      const initRes = await fetch(`${b}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: ACCEPT },
+        body: INIT,
+      });
+      assert.equal(initRes.status, 200);
+      const sessionId = initRes.headers.get("mcp-session-id");
+      assert.ok(sessionId);
+      await initRes.text();
+      await new Promise((r) => setTimeout(r, 600));
+      const after = await fetch(`${b}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: ACCEPT, "mcp-session-id": sessionId! },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 101, method: "tools/list", params: {} }),
+      });
+      assert.equal(after.status, 404);
+    } finally {
+      await cfg.close();
+    }
+  } finally {
+    setConfig("SESSION_IDLE_MS", "0");
+  }
+});
+
+test("LRU eviction frees capacity at MAX_SESSIONS", async () => {
+  const lru = createHttpServer(() => createMcpServer("test"));
+  await new Promise<void>((resolve) => lru.httpServer.listen(0, "127.0.0.1", resolve));
+  const p = (lru.httpServer.address() as AddressInfo).port;
+  const b = `http://127.0.0.1:${p}`;
+  try {
+    const ids: string[] = [];
+    for (let i = 0; i < 101; i++) {
+      const res = await fetch(`${b}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: ACCEPT },
+        body: INIT,
+      });
+      assert.equal(res.status, 200);
+      const sid = res.headers.get("mcp-session-id");
+      assert.ok(sid, `session ${i} has an id`);
+      await res.text();
+      ids.push(sid!);
+    }
+    const list = (sid: string) => fetch(`${b}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: ACCEPT, "mcp-session-id": sid },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 102, method: "tools/list", params: {} }),
+    });
+    const first = await list(ids[0]);
+    assert.equal(first.status, 404, "oldest session evicted");
+    const second = await list(ids[1]);
+    assert.equal(second.status, 200, "second-oldest session survives");
+    await second.text();
+    const newest = await list(ids[100]);
+    assert.equal(newest.status, 200, "newest session works");
+    await newest.text();
+  } finally {
+    await lru.close();
   }
 });
 

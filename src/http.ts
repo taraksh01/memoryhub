@@ -14,7 +14,6 @@ export interface HttpServerOptions {
   sessionIdleMs?: number;
 }
 
-const DEFAULT_SESSION_IDLE_MS = 60 * 60 * 1000;
 const PENDING_SESSION_TTL_MS = 30 * 1000;
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const MAX_SESSIONS = 100;
@@ -70,7 +69,7 @@ function enforceBodyLimit(req: IncomingMessage, res: ServerResponse): void {
 export function createHttpServer(serverFactory: () => McpServer, options: HttpServerOptions = {}): HttpHandle {
   const sessions = new Map<string, Session>();
   const pending = new Map<StreamableHTTPServerTransport, number>();
-  const idleMs = options.sessionIdleMs ?? DEFAULT_SESSION_IDLE_MS;
+  const idleMs = options.sessionIdleMs ?? (Number(getConfig("SESSION_IDLE_MS")) || 0);
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -98,8 +97,23 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         }
         if (!session) {
           if (sessions.size + pending.size >= MAX_SESSIONS) {
-            res.writeHead(429).end("Too many sessions");
-            return;
+            let lruId: string | undefined;
+            let lruSeen = Infinity;
+            for (const [id, s] of sessions) {
+              if (s.lastSeen < lruSeen) {
+                lruSeen = s.lastSeen;
+                lruId = id;
+              }
+            }
+            if (lruId) {
+              const victim = sessions.get(lruId)!;
+              try { victim.transport.close(); } catch {}
+              sessions.delete(lruId);
+              console.error(`memoryhub: evicted least-recently-used session ${lruId}`);
+            } else {
+              res.writeHead(429).end("Too many sessions");
+              return;
+            }
           }
           const server = serverFactory();
           let created: StreamableHTTPServerTransport | undefined;
@@ -149,11 +163,13 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
 
   const prune = () => {
     const now = Date.now();
-    for (const [id, s] of sessions) {
-      if (now - s.lastSeen > idleMs) {
-        try { s.transport.close(); } catch {}
-        sessions.delete(id);
-        console.error(`memoryhub: pruned idle session ${id}`);
+    if (idleMs > 0) {
+      for (const [id, s] of sessions) {
+        if (now - s.lastSeen > idleMs) {
+          try { s.transport.close(); } catch {}
+          sessions.delete(id);
+          console.error(`memoryhub: pruned idle session ${id}`);
+        }
       }
     }
     for (const [t, created] of pending) {
@@ -164,7 +180,8 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
       }
     }
   };
-  const pruneTimer = setInterval(prune, Math.max(500, Math.min(60_000, idleMs / 2)));
+  const sweepMs = idleMs > 0 ? Math.min(idleMs / 2, 60_000) : Math.min(PENDING_SESSION_TTL_MS / 2, 60_000);
+  const pruneTimer = setInterval(prune, Math.max(500, sweepMs));
   pruneTimer.unref();
 
   const close = async () => {
