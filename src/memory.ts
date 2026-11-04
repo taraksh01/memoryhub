@@ -411,22 +411,23 @@ export async function addMemoriesRaw(text: string, project?: string, opts: AddOp
           }
           if (action === "merged") {
             const mergedText = mergeTexts(dup.text, fact);
-          const mergedVector = await embed(mergedText);
-          const existing = await qdrant().retrieve(getConfig("COLLECTION"), { ids: [qdrantId(dup.id)], with_payload: true });
-          const oldPayload = (existing[0]?.payload ?? {}) as Record<string, unknown>;
-          const payload: Record<string, unknown> = {
-            ...basePayload(opts, now),
-            text: mergedText,
-            created_at: typeof oldPayload.created_at === "string" ? oldPayload.created_at : now,
-          };
-          if (oldPayload.project !== undefined) payload.project = oldPayload.project;
-          else if (project) payload.project = project;
-          if (typeof oldPayload.source === "string") payload.source = oldPayload.source;
-          if (oldPayload.importance !== undefined) payload.importance = oldPayload.importance;
-          if (typeof oldPayload.expires_at === "string") payload.expires_at = oldPayload.expires_at;
-          await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id: qdrantId(dup.id), vector: mergedVector, payload }], wait: true });
-          outcomes.push({ id: dup.id, text: mergedText, action: "merged" });
-          return;
+            const mergedVector = await embed(mergedText);
+            const existing = await qdrant().retrieve(getConfig("COLLECTION"), { ids: [qdrantId(dup.id)], with_payload: true });
+            const oldPayload = (existing[0]?.payload ?? {}) as Record<string, unknown>;
+            const payload: Record<string, unknown> = {
+              ...basePayload(opts, now),
+              text: mergedText,
+              created_at: typeof oldPayload.created_at === "string" ? oldPayload.created_at : now,
+            };
+            if (oldPayload.project !== undefined) payload.project = oldPayload.project;
+            else if (project) payload.project = project;
+            if (typeof oldPayload.source === "string") payload.source = oldPayload.source;
+            if (oldPayload.importance !== undefined) payload.importance = oldPayload.importance;
+            if (typeof oldPayload.expires_at === "string") payload.expires_at = oldPayload.expires_at;
+            await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id: qdrantId(dup.id), vector: mergedVector, payload }], wait: true });
+            outcomes.push({ id: dup.id, text: mergedText, action: "merged" });
+            return;
+          }
         }
       }
       const payload: Record<string, unknown> = { ...basePayload(opts, now), text: fact };
@@ -434,7 +435,6 @@ export async function addMemoriesRaw(text: string, project?: string, opts: AddOp
       const id = randomUUID();
       await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id, vector, payload }], wait: true });
       outcomes.push({ id, text: fact, action: "inserted" });
-      }
     };
     if (dedupEnabled) await withProjectLock(project ?? "", run);
     else await run();
