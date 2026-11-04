@@ -8,8 +8,23 @@ export interface MemoryHubConfig {
   vector_size?: number;
   retry_delay_ms?: number;
   api_token?: string;
-  llm?: { model?: string; base_url?: string; api_key?: string };
-  embedder?: { model?: string; base_url?: string; api_key?: string };
+  llm?: {
+    model?: string;
+    base_url?: string;
+    api_key?: string;
+    max_tokens?: number;
+    max_tokens_param?: string;
+    temperature?: number | string;
+    extra_body?: Record<string, unknown>;
+    extra_headers?: Record<string, unknown>;
+  };
+  embedder?: {
+    model?: string;
+    base_url?: string;
+    api_key?: string;
+    extra_body?: Record<string, unknown>;
+    extra_headers?: Record<string, unknown>;
+  };
   dedup?: { enabled?: boolean; threshold?: number; skip_threshold?: number };
   session_idle_ms?: number;
 }
@@ -57,7 +72,7 @@ let lastCorruptWarned = false;
 
 const overrides: Record<string, string> = {};
 
-const VALID_KEYS = new Set(["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY", "RETRY_DELAY_MS", "DEDUP_ENABLED", "DEDUP_THRESHOLD", "DEDUP_SKIP_THRESHOLD", "API_TOKEN", "SESSION_IDLE_MS"]);
+const VALID_KEYS = new Set(["QDRANT_URL", "COLLECTION", "VECTOR_SIZE", "LLM_MODEL", "LLM_BASE", "LLM_KEY", "LLM_MAX_TOKENS", "LLM_MAX_TOKENS_PARAM", "LLM_TEMPERATURE", "LLM_EXTRA_BODY", "LLM_EXTRA_HEADERS", "EMBED_MODEL", "EMBED_BASE", "EMBED_KEY", "EMBED_EXTRA_BODY", "EMBED_EXTRA_HEADERS", "RETRY_DELAY_MS", "DEDUP_ENABLED", "DEDUP_THRESHOLD", "DEDUP_SKIP_THRESHOLD", "API_TOKEN", "SESSION_IDLE_MS"]);
 
 const DEFAULTS: Record<string, string> = {
   QDRANT_URL: "http://localhost:6333",
@@ -66,9 +81,16 @@ const DEFAULTS: Record<string, string> = {
   LLM_MODEL: "",
   LLM_BASE: "",
   LLM_KEY: "",
+  LLM_MAX_TOKENS: "2000",
+  LLM_MAX_TOKENS_PARAM: "auto",
+  LLM_TEMPERATURE: "auto",
+  LLM_EXTRA_BODY: "",
+  LLM_EXTRA_HEADERS: "",
   EMBED_MODEL: "",
   EMBED_BASE: "",
   EMBED_KEY: "",
+  EMBED_EXTRA_BODY: "",
+  EMBED_EXTRA_HEADERS: "",
   RETRY_DELAY_MS: "1000",
   DEDUP_ENABLED: "true",
   DEDUP_THRESHOLD: "0.85",
@@ -119,9 +141,16 @@ function envValue(key: string): string | undefined {
     case "LLM_MODEL": return e.LLM_MODEL;
     case "LLM_BASE": return urlValue("LLM_BASE", e.LLM_BASE ?? e.LLM_BASE_URL, false);
     case "LLM_KEY": return e.LLM_KEY ?? e.LLM_API_KEY;
+    case "LLM_MAX_TOKENS": return numValue("LLM_MAX_TOKENS", e.LLM_MAX_TOKENS, (n) => Number.isInteger(n) && n > 0);
+    case "LLM_MAX_TOKENS_PARAM": return e.LLM_MAX_TOKENS_PARAM;
+    case "LLM_TEMPERATURE": return e.LLM_TEMPERATURE;
+    case "LLM_EXTRA_BODY": return e.LLM_EXTRA_BODY;
+    case "LLM_EXTRA_HEADERS": return e.LLM_EXTRA_HEADERS;
     case "EMBED_MODEL": return e.EMBED_MODEL;
     case "EMBED_BASE": return urlValue("EMBED_BASE", e.EMBED_BASE ?? e.EMBED_BASE_URL, false);
     case "EMBED_KEY": return e.EMBED_KEY ?? e.EMBED_API_KEY;
+    case "EMBED_EXTRA_BODY": return e.EMBED_EXTRA_BODY;
+    case "EMBED_EXTRA_HEADERS": return e.EMBED_EXTRA_HEADERS;
     case "RETRY_DELAY_MS": return numValue("RETRY_DELAY_MS", e.MEMORYHUB_RETRY_DELAY_MS, (n) => n >= 0);
     case "DEDUP_ENABLED": return e.MEMORYHUB_DEDUP_ENABLED;
     case "DEDUP_THRESHOLD": return numValue("DEDUP_THRESHOLD", e.MEMORYHUB_DEDUP_THRESHOLD, (n) => n > 0 && n < 1);
@@ -142,9 +171,16 @@ function fileValue(key: string): string | undefined {
     case "LLM_MODEL": return c.llm?.model;
     case "LLM_BASE": return urlValue("LLM_BASE", c.llm?.base_url, false);
     case "LLM_KEY": return c.llm?.api_key;
+    case "LLM_MAX_TOKENS": return typeof c.llm?.max_tokens === "number" ? numValue("LLM_MAX_TOKENS", String(c.llm.max_tokens), (n) => Number.isInteger(n) && n > 0) : undefined;
+    case "LLM_MAX_TOKENS_PARAM": return typeof c.llm?.max_tokens_param === "string" ? c.llm.max_tokens_param : undefined;
+    case "LLM_TEMPERATURE": return c.llm?.temperature !== undefined ? String(c.llm.temperature) : undefined;
+    case "LLM_EXTRA_BODY": return c.llm?.extra_body ? JSON.stringify(c.llm.extra_body) : undefined;
+    case "LLM_EXTRA_HEADERS": return c.llm?.extra_headers ? JSON.stringify(c.llm.extra_headers) : undefined;
     case "EMBED_MODEL": return c.embedder?.model;
     case "EMBED_BASE": return urlValue("EMBED_BASE", c.embedder?.base_url, false);
     case "EMBED_KEY": return c.embedder?.api_key;
+    case "EMBED_EXTRA_BODY": return c.embedder?.extra_body ? JSON.stringify(c.embedder.extra_body) : undefined;
+    case "EMBED_EXTRA_HEADERS": return c.embedder?.extra_headers ? JSON.stringify(c.embedder.extra_headers) : undefined;
     case "RETRY_DELAY_MS": return typeof c.retry_delay_ms === "number" ? numValue("RETRY_DELAY_MS", String(c.retry_delay_ms), (n) => n >= 0) : undefined;
     case "DEDUP_ENABLED": return typeof c.dedup?.enabled === "boolean" ? String(c.dedup.enabled) : undefined;
     case "DEDUP_THRESHOLD": return typeof c.dedup?.threshold === "number" ? numValue("DEDUP_THRESHOLD", String(c.dedup.threshold), (n) => n > 0 && n < 1) : undefined;
@@ -164,9 +200,15 @@ export function getConfig(key: string): string {
   return envValue(key) ?? fileValue(key) ?? DEFAULTS[key];
 }
 
+// Keys where an empty value is meaningful (clears the setting) rather than an error.
+const OPTIONAL_EMPTY_KEYS = new Set(["LLM_EXTRA_BODY", "LLM_EXTRA_HEADERS", "EMBED_EXTRA_BODY", "EMBED_EXTRA_HEADERS"]);
+
 export function validateValue(key: string, value: string): void {
   const v = value.trim();
-  if (!v) throw new Error(`${key} must not be empty`);
+  if (!v) {
+    if (OPTIONAL_EMPTY_KEYS.has(key)) return;
+    throw new Error(`${key} must not be empty`);
+  }
   switch (key) {
     case "QDRANT_URL":
     case "LLM_BASE":
@@ -203,10 +245,37 @@ export function validateValue(key: string, value: string): void {
       if (!Number.isInteger(n) || n < 0) throw new Error(`SESSION_IDLE_MS must be a non-negative integer (milliseconds, 0 = never expire), got "${value}"`);
       break;
     }
+    case "LLM_MAX_TOKENS": {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`LLM_MAX_TOKENS must be a positive integer, got "${value}"`);
+      break;
+    }
+    case "LLM_TEMPERATURE": {
+      if (v === "auto" || v === "none") break;
+      const n = Number(v);
+      if (isNaN(n) || n < 0 || n > 2) throw new Error(`LLM_TEMPERATURE must be "auto", "none", or a number between 0 and 2, got "${value}"`);
+      break;
+    }
+    case "LLM_MAX_TOKENS_PARAM": {
+      if (v === "auto" || v === "none") break;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(v)) throw new Error(`LLM_MAX_TOKENS_PARAM must be "auto", "none", or a parameter name, got "${value}"`);
+      break;
+    }
+    case "LLM_EXTRA_BODY":
+    case "LLM_EXTRA_HEADERS":
+    case "EMBED_EXTRA_BODY":
+    case "EMBED_EXTRA_HEADERS": {
+      let parsed: unknown;
+      try { parsed = JSON.parse(v); } catch { throw new Error(`${key} must be valid JSON, got "${value}"`); }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error(`${key} must be a JSON object, got "${value}"`);
+      }
+      break;
+    }
   }
 }
 
-function isConfigPath(key: string): key is "QDRANT_URL" | "COLLECTION" | "VECTOR_SIZE" | "LLM_MODEL" | "LLM_BASE" | "LLM_KEY" | "EMBED_MODEL" | "EMBED_BASE" | "EMBED_KEY" | "RETRY_DELAY_MS" | "DEDUP_ENABLED" | "DEDUP_THRESHOLD" | "DEDUP_SKIP_THRESHOLD" | "API_TOKEN" | "SESSION_IDLE_MS" {
+function isConfigPath(key: string): key is "QDRANT_URL" | "COLLECTION" | "VECTOR_SIZE" | "LLM_MODEL" | "LLM_BASE" | "LLM_KEY" | "LLM_MAX_TOKENS" | "LLM_MAX_TOKENS_PARAM" | "LLM_TEMPERATURE" | "LLM_EXTRA_BODY" | "LLM_EXTRA_HEADERS" | "EMBED_MODEL" | "EMBED_BASE" | "EMBED_KEY" | "EMBED_EXTRA_BODY" | "EMBED_EXTRA_HEADERS" | "RETRY_DELAY_MS" | "DEDUP_ENABLED" | "DEDUP_THRESHOLD" | "DEDUP_SKIP_THRESHOLD" | "API_TOKEN" | "SESSION_IDLE_MS" {
   return VALID_KEYS.has(key);
 }
 
@@ -218,9 +287,28 @@ function applyKeyToConfig(config: MemoryHubConfig, key: string, value: string): 
     case "LLM_MODEL": config.llm = { ...config.llm, model: value }; break;
     case "LLM_BASE": config.llm = { ...config.llm, base_url: value }; break;
     case "LLM_KEY": config.llm = { ...config.llm, api_key: value }; break;
+    case "LLM_MAX_TOKENS": config.llm = { ...config.llm, max_tokens: Number(value) }; break;
+    case "LLM_MAX_TOKENS_PARAM": config.llm = { ...config.llm, max_tokens_param: value }; break;
+    case "LLM_TEMPERATURE": config.llm = { ...config.llm, temperature: value === "auto" || value === "none" ? value : Number(value) }; break;
+    case "LLM_EXTRA_BODY":
+    case "LLM_EXTRA_HEADERS": {
+      config.llm = { ...config.llm };
+      const field = key === "LLM_EXTRA_BODY" ? "extra_body" : "extra_headers";
+      if (value.trim()) (config.llm as Record<string, unknown>)[field] = JSON.parse(value);
+      else delete (config.llm as Record<string, unknown>)[field];
+      break;
+    }
     case "EMBED_MODEL": config.embedder = { ...config.embedder, model: value }; break;
     case "EMBED_BASE": config.embedder = { ...config.embedder, base_url: value }; break;
     case "EMBED_KEY": config.embedder = { ...config.embedder, api_key: value }; break;
+    case "EMBED_EXTRA_BODY":
+    case "EMBED_EXTRA_HEADERS": {
+      config.embedder = { ...config.embedder };
+      const field = key === "EMBED_EXTRA_BODY" ? "extra_body" : "extra_headers";
+      if (value.trim()) (config.embedder as Record<string, unknown>)[field] = JSON.parse(value);
+      else delete (config.embedder as Record<string, unknown>)[field];
+      break;
+    }
     case "RETRY_DELAY_MS": config.retry_delay_ms = Number(value); break;
     case "DEDUP_ENABLED": config.dedup = { ...config.dedup, enabled: value === "true" }; break;
     case "DEDUP_THRESHOLD": config.dedup = { ...config.dedup, threshold: Number(value) }; break;

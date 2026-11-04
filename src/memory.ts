@@ -78,19 +78,65 @@ export async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+function jsonObjectConfig(key: string): Record<string, string> {
+  const raw = getConfig(key);
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>;
+    }
+    console.error(`memoryhub: ignoring ${key} — must be a JSON object`);
+  } catch {
+    console.error(`memoryhub: ignoring ${key} — invalid JSON`);
+  }
+  return {};
+}
+
+// Reasoning-era models (OpenAI gpt-5*, o-series) reject `max_tokens` and any
+// non-default `temperature`, so zero-config defaults adapt to the model name.
+function isReasoningModel(model: string): boolean {
+  return /^(gpt-5|o[1-9])/i.test(model);
+}
+
+function tokenLimitParams(model: string): Record<string, number> {
+  const forced = getConfig("LLM_MAX_TOKENS_PARAM");
+  if (forced === "none") return {};
+  const name = !forced || forced === "auto" ? (isReasoningModel(model) ? "max_completion_tokens" : "max_tokens") : forced;
+  const value = Number(getConfig("LLM_MAX_TOKENS"));
+  if (!Number.isFinite(value) || value <= 0) return {};
+  return { [name]: value };
+}
+
+function temperatureParams(model: string): Record<string, number> {
+  const cfg = getConfig("LLM_TEMPERATURE");
+  if (cfg === "none" || (cfg === "auto" && isReasoningModel(model))) return {};
+  const value = cfg === "auto" ? 0.1 : Number(cfg);
+  if (!Number.isFinite(value)) return {};
+  return { temperature: value };
+}
+
 export async function llm(messages: ChatMessage[]): Promise<string> {
   const base = getConfig("LLM_BASE");
   const key = getConfig("LLM_KEY");
-  const model = getConfig("LLM_MODEL");
   return withRetry(async () => {
+    const model = getConfig("LLM_MODEL");
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${key}`, ...jsonObjectConfig("LLM_EXTRA_HEADERS") };
+    const body = {
+      model,
+      messages,
+      ...tokenLimitParams(model),
+      ...temperatureParams(model),
+      ...jsonObjectConfig("LLM_EXTRA_BODY"),
+    };
     const r = await fetchWithTimeout(`${base}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages, temperature: 0.1, max_tokens: 2000 }),
+      headers,
+      body: JSON.stringify(body),
     });
     if (!r.ok) {
-      const body = await r.text();
-      const err = new Error(`LLM ${r.status}: ${body.slice(0, 300)}`) as ErrorWithStatus;
+      const text = await r.text();
+      const err = new Error(`LLM ${r.status}: ${text.slice(0, 300)}`) as ErrorWithStatus;
       err.status = r.status;
       throw err;
     }
@@ -104,16 +150,18 @@ export async function llm(messages: ChatMessage[]): Promise<string> {
 export async function embed(text: string): Promise<number[]> {
   const base = getConfig("EMBED_BASE");
   const key = getConfig("EMBED_KEY");
-  const model = getConfig("EMBED_MODEL");
   return withRetry(async () => {
+    const model = getConfig("EMBED_MODEL");
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${key}`, ...jsonObjectConfig("EMBED_EXTRA_HEADERS") };
+    const body = { model, input: text, ...jsonObjectConfig("EMBED_EXTRA_BODY") };
     const r = await fetchWithTimeout(`${base}/embeddings`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, input: text }),
+      headers,
+      body: JSON.stringify(body),
     });
     if (!r.ok) {
-      const body = await r.text();
-      const err = new Error(`Embed ${r.status}: ${body.slice(0, 300)}`) as ErrorWithStatus;
+      const errText = await r.text();
+      const err = new Error(`Embed ${r.status}: ${errText.slice(0, 300)}`) as ErrorWithStatus;
       err.status = r.status;
       throw err;
     }
