@@ -96,9 +96,16 @@ Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `
 | `LLM_MODEL` | — | — | LLM model for extraction |
 | `LLM_BASE_URL` | `LLM_BASE` | — | LLM API base URL |
 | `LLM_API_KEY` | `LLM_KEY` | — | LLM API key |
+| `LLM_MAX_TOKENS` | — | `2000` | Output-token limit sent to the LLM |
+| `LLM_MAX_TOKENS_PARAM` | — | `auto` | Name of the token-limit field. `auto` picks `max_completion_tokens` for reasoning models (`gpt-5*`, `o1`–`o9`) and `max_tokens` otherwise. Set an explicit name for other providers, or `none` to omit the field |
+| `LLM_TEMPERATURE` | — | `auto` | Sampling temperature. `auto` omits it for reasoning models (which only accept the default) and sends `0.1` otherwise. Set a number 0–2 to force, or `none` to omit |
+| `LLM_EXTRA_BODY` | — | — | JSON object merged into the chat-completions request body (e.g. `{"reasoning_effort":"low"}`). Overrides the fields above |
+| `LLM_EXTRA_HEADERS` | — | — | JSON object merged into the chat-completions request headers |
 | `EMBED_MODEL` | — | — | Embedding model (required) |
 | `EMBED_BASE_URL` | `EMBED_BASE` | — | Embedding API base URL (required) |
 | `EMBED_API_KEY` | `EMBED_KEY` | — | Embedding API key (required) |
+| `EMBED_EXTRA_BODY` | — | — | JSON object merged into the embeddings request body (e.g. `{"dimensions":256}`) |
+| `EMBED_EXTRA_HEADERS` | — | — | JSON object merged into the embeddings request headers |
 | `MEMORYHUB_PORT` | — | `9876` | Port for HTTP serve mode |
 | `MEMORYHUB_HOST` | — | `::` | Bind host for HTTP serve mode (dual-stack by default: accepts both IPv4 and IPv6 on `::`). Set `0.0.0.0` for IPv4-only |
 | `MEMORYHUB_IPV6_ONLY` | — | `false` | Set `true` to make the `::` socket IPv6-only (no IPv4 connections) |
@@ -108,6 +115,24 @@ Short names (`LLM_BASE`, `LLM_KEY`) are preferred. Long names (`LLM_BASE_URL`, `
 | `MEMORYHUB_DEDUP_SKIP_THRESHOLD` | — | `0.99` | Similarity score ≥ this skips the new fact entirely (identical duplicate) |
 | `MEMORYHUB_API_TOKEN` | — | — | Optional bearer token. When set, the HTTP transport requires `Authorization: Bearer <token>` on every request (401 otherwise) |
 | `MEMORYHUB_SESSION_IDLE_MS` | — | `0` | Idle timeout for HTTP sessions in milliseconds. `0` disables idle pruning (sessions live until the client closes them or the server restarts; at capacity the least-recently-used session is evicted). Set a positive value (e.g. `900000` for 15 min) to expire sessions that go silent — clients should then send periodic MCP `ping` requests (a heartbeat) to keep the session alive, and must re-initialize on HTTP 404 |
+
+### Customizing LLM / embedding requests
+
+Providers and models differ in which request fields they accept (OpenAI reasoning models reject `max_tokens` and non-default `temperature`, for example). MemoryHub adapts automatically for `gpt-5*`/`o*` models and exposes everything else:
+
+- `LLM_MAX_TOKENS_PARAM` and `LLM_TEMPERATURE` accept `auto` (default), `none` (omit the field), or an explicit value.
+- `LLM_EXTRA_BODY` / `LLM_EXTRA_HEADERS` (and `EMBED_EXTRA_BODY` / `EMBED_EXTRA_HEADERS`) are JSON objects merged into the request, so any provider-specific field or header can be set — env var or config file.
+
+```json
+{
+  "llm": {
+    "model": "gpt-5-nano",
+    "base_url": "https://api.openai.com/v1",
+    "temperature": "none",
+    "extra_body": { "reasoning_effort": "low" }
+  }
+}
+```
 
 ## Memory Scopes
 

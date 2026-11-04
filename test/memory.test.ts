@@ -7,8 +7,10 @@ import { join } from "node:path";
 const ENV_KEYS = [
   "MEMORYHUB_DIR", "MEMORYHUB_CONFIG", "QDRANT_URL", "MEMORYHUB_COLLECTION",
   "MEMORYHUB_VECTOR_SIZE", "MEMORYHUB_RETRY_DELAY_MS", "LLM_MODEL", "LLM_BASE",
-  "LLM_BASE_URL", "LLM_KEY", "LLM_API_KEY", "EMBED_MODEL", "EMBED_BASE",
-  "EMBED_BASE_URL", "EMBED_KEY", "EMBED_API_KEY",
+  "LLM_BASE_URL", "LLM_KEY", "LLM_API_KEY", "LLM_MAX_TOKENS",
+  "LLM_MAX_TOKENS_PARAM", "LLM_TEMPERATURE", "LLM_EXTRA_BODY", "LLM_EXTRA_HEADERS",
+  "EMBED_MODEL", "EMBED_BASE", "EMBED_BASE_URL", "EMBED_KEY", "EMBED_API_KEY",
+  "EMBED_EXTRA_BODY", "EMBED_EXTRA_HEADERS",
 ];
 
 for (const k of ENV_KEYS) delete process.env[k];
@@ -255,4 +257,120 @@ test("importMemories rejects non-array shapes", async () => {
 test("importMemories rejects oversized imports", async () => {
   const big = JSON.stringify({ memories: Array.from({ length: 10001 }, (_, i) => ({ text: `m${i}` })) });
   await assert.rejects(mem.importMemories(big), /Too many items/);
+});
+
+// --- LLM/embed request customisation ---
+
+const cfg = await import("../src/config.ts");
+
+function captureFetch(t: import("node:test").TestContext): { body: () => Record<string, unknown>; headers: () => Record<string, string> } {
+  let b: Record<string, unknown> = {};
+  let h: Record<string, string> = {};
+  t.mock.method(globalThis, "fetch", async (_url: RequestInfo | URL, init?: RequestInit) => {
+    b = JSON.parse(String(init?.body));
+    h = (init?.headers ?? {}) as Record<string, string>;
+    return chatCompletion("ok");
+  });
+  return { body: () => b, headers: () => h };
+}
+
+function setLlm(model: string): void {
+  cfg.setConfig("LLM_MODEL", model);
+  cfg.setConfig("LLM_BASE", "http://llm.test");
+  cfg.setConfig("LLM_KEY", "k");
+}
+
+test("llm uses max_completion_tokens and omits temperature for reasoning models", async (t) => {
+  setLlm("gpt-5-nano");
+  const cap = captureFetch(t);
+  await mem.llm([{ role: "user", content: "hi" }]);
+  assert.equal(cap.body().max_completion_tokens, 2000);
+  assert.equal("max_tokens" in cap.body(), false);
+  assert.equal("temperature" in cap.body(), false);
+});
+
+test("llm uses max_tokens and a low temperature for classic models", async (t) => {
+  setLlm("gpt-4o-mini");
+  const cap = captureFetch(t);
+  await mem.llm([{ role: "user", content: "hi" }]);
+  assert.equal(cap.body().max_tokens, 2000);
+  assert.equal(cap.body().temperature, 0.1);
+  assert.equal("max_completion_tokens" in cap.body(), false);
+});
+
+test("LLM_MAX_TOKENS_PARAM overrides the token parameter name", async (t) => {
+  setLlm("gpt-4o-mini");
+  cfg.setConfig("LLM_MAX_TOKENS_PARAM", "max_new_tokens");
+  try {
+    const cap = captureFetch(t);
+    await mem.llm([{ role: "user", content: "hi" }]);
+    assert.equal(cap.body().max_new_tokens, 2000);
+    assert.equal("max_tokens" in cap.body(), false);
+  } finally {
+    cfg.setConfig("LLM_MAX_TOKENS_PARAM", "auto");
+  }
+});
+
+test("LLM_MAX_TOKENS_PARAM=none omits the token parameter", async (t) => {
+  setLlm("gpt-4o-mini");
+  cfg.setConfig("LLM_MAX_TOKENS_PARAM", "none");
+  try {
+    const cap = captureFetch(t);
+    await mem.llm([{ role: "user", content: "hi" }]);
+    assert.equal("max_tokens" in cap.body(), false);
+    assert.equal("max_completion_tokens" in cap.body(), false);
+  } finally {
+    cfg.setConfig("LLM_MAX_TOKENS_PARAM", "auto");
+  }
+});
+
+test("LLM_TEMPERATURE=none omits temperature", async (t) => {
+  setLlm("gpt-4o-mini");
+  cfg.setConfig("LLM_TEMPERATURE", "none");
+  try {
+    const cap = captureFetch(t);
+    await mem.llm([{ role: "user", content: "hi" }]);
+    assert.equal("temperature" in cap.body(), false);
+  } finally {
+    cfg.setConfig("LLM_TEMPERATURE", "auto");
+  }
+});
+
+test("LLM_EXTRA_BODY and LLM_EXTRA_HEADERS are merged into the request", async (t) => {
+  setLlm("gpt-4o-mini");
+  cfg.setConfig("LLM_EXTRA_BODY", '{"reasoning_effort":"low","max_tokens":123}');
+  cfg.setConfig("LLM_EXTRA_HEADERS", '{"X-Custom":"yes"}');
+  try {
+    const cap = captureFetch(t);
+    await mem.llm([{ role: "user", content: "hi" }]);
+    assert.equal(cap.body().reasoning_effort, "low");
+    assert.equal(cap.body().max_tokens, 123, "extra body overrides the default");
+    assert.equal(cap.headers()["X-Custom"], "yes");
+  } finally {
+    cfg.setConfig("LLM_EXTRA_BODY", "");
+    cfg.setConfig("LLM_EXTRA_HEADERS", "");
+  }
+});
+
+test("EMBED_EXTRA_BODY and EMBED_EXTRA_HEADERS are merged into the embeddings request", async (t) => {
+  cfg.setConfig("EMBED_MODEL", "text-embedding-3-small");
+  cfg.setConfig("EMBED_BASE", "http://embed.test");
+  cfg.setConfig("EMBED_KEY", "k");
+  cfg.setConfig("EMBED_EXTRA_BODY", '{"dimensions":256}');
+  cfg.setConfig("EMBED_EXTRA_HEADERS", '{"X-Embed":"1"}');
+  try {
+    let body: Record<string, unknown> = {};
+    let headers: Record<string, string> = {};
+    t.mock.method(globalThis, "fetch", async (_url: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      headers = (init?.headers ?? {}) as Record<string, string>;
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1] }] }), { status: 200 });
+    });
+    await mem.embed("hi");
+    assert.equal(body.dimensions, 256);
+    assert.equal(headers["X-Embed"], "1");
+  } finally {
+    cfg.setConfig("EMBED_EXTRA_BODY", "");
+    cfg.setConfig("EMBED_EXTRA_HEADERS", "");
+  }
 });

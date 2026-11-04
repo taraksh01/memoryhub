@@ -8,8 +8,10 @@ import type { AddressInfo } from "node:net";
 const ENV_KEYS = [
   "MEMORYHUB_DIR", "MEMORYHUB_CONFIG", "QDRANT_URL", "MEMORYHUB_COLLECTION",
   "MEMORYHUB_VECTOR_SIZE", "MEMORYHUB_RETRY_DELAY_MS", "LLM_MODEL", "LLM_BASE",
-  "LLM_BASE_URL", "LLM_KEY", "LLM_API_KEY", "EMBED_MODEL", "EMBED_BASE",
-  "EMBED_BASE_URL", "EMBED_KEY", "EMBED_API_KEY", "MEMORYHUB_SESSION_IDLE_MS",
+  "LLM_BASE_URL", "LLM_KEY", "LLM_API_KEY", "LLM_MAX_TOKENS",
+  "LLM_MAX_TOKENS_PARAM", "LLM_TEMPERATURE", "LLM_EXTRA_BODY", "LLM_EXTRA_HEADERS",
+  "EMBED_MODEL", "EMBED_BASE", "EMBED_BASE_URL", "EMBED_KEY", "EMBED_API_KEY",
+  "EMBED_EXTRA_BODY", "EMBED_EXTRA_HEADERS", "MEMORYHUB_SESSION_IDLE_MS",
 ];
 
 for (const k of ENV_KEYS) delete process.env[k];
@@ -190,6 +192,47 @@ test("POST /mcp tools/call add_memories stores a memory", async (t) => {
     assert.equal(parsed.memories[0].text, "remember pnpm");
     assert.equal(parsed.memories[0].action, "inserted");
     assert.ok(parsed.memories[0].id);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v) setConfig(k, v); }
+  }
+});
+
+test("POST /mcp add_memories with dedup:false still stores the memory", async (t) => {
+  const { sessionId } = await initialize();
+  const saved = { QDRANT_URL: getConfig("QDRANT_URL"), EMBED_MODEL: getConfig("EMBED_MODEL"), EMBED_BASE: getConfig("EMBED_BASE"), EMBED_KEY: getConfig("EMBED_KEY"), LLM_MODEL: getConfig("LLM_MODEL"), LLM_BASE: getConfig("LLM_BASE"), LLM_KEY: getConfig("LLM_KEY") };
+  setConfig("QDRANT_URL", "http://qdrant.test:6333");
+  setConfig("EMBED_MODEL", "text-embedding-3-small");
+  setConfig("EMBED_BASE", "http://embed.test:1");
+  setConfig("EMBED_KEY", "k");
+  setConfig("LLM_MODEL", "gpt-4o-mini");
+  setConfig("LLM_BASE", "http://llm.test:1");
+  setConfig("LLM_KEY", "k");
+  try {
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.startsWith(`http://127.0.0.1:${port}`)) return originalFetch(url, init);
+      if (u.includes("/chat/completions")) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: '["no-dedup fact"]' } }] }), { status: 200 });
+      }
+      if (u.includes("/embeddings")) {
+        return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ result: { status: "completed", operation_id: 1, points: [] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "server-version": "1.18.0" },
+      });
+    });
+    const { message } = await mcpPost(sessionId, JSON.stringify({
+      jsonrpc: "2.0",
+      id: 30,
+      method: "tools/call",
+      params: { name: "add_memories", arguments: { text: "Tarak prefers pnpm", dedup: false } },
+    }));
+    const parsed = JSON.parse(message.result.content[0].text);
+    assert.equal(parsed.added, 1, "dedup:false must still insert the fact");
+    assert.equal(parsed.memories.length, 1);
+    assert.equal(parsed.memories[0].action, "inserted");
   } finally {
     for (const [k, v] of Object.entries(saved)) { if (v) setConfig(k, v); }
   }

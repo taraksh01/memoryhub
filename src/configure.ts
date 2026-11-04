@@ -23,7 +23,9 @@ Usage:
   memoryhub configure --help          Show this help
 
 Valid keys: QDRANT_URL, COLLECTION, VECTOR_SIZE, LLM_MODEL, LLM_BASE,
-            LLM_KEY, EMBED_MODEL, EMBED_BASE, EMBED_KEY, RETRY_DELAY_MS,
+            LLM_KEY, LLM_MAX_TOKENS, LLM_MAX_TOKENS_PARAM, LLM_TEMPERATURE,
+            LLM_EXTRA_BODY, LLM_EXTRA_HEADERS, EMBED_MODEL, EMBED_BASE,
+            EMBED_KEY, EMBED_EXTRA_BODY, EMBED_EXTRA_HEADERS, RETRY_DELAY_MS,
             DEDUP_ENABLED, DEDUP_THRESHOLD, DEDUP_SKIP_THRESHOLD, API_TOKEN,
             SESSION_IDLE_MS
 `;
@@ -66,9 +68,16 @@ const FILE_KEY_MAP: Record<string, string> = {
   "llm.model": "LLM_MODEL",
   "llm.base_url": "LLM_BASE",
   "llm.api_key": "LLM_KEY",
+  "llm.max_tokens": "LLM_MAX_TOKENS",
+  "llm.max_tokens_param": "LLM_MAX_TOKENS_PARAM",
+  "llm.temperature": "LLM_TEMPERATURE",
+  "llm.extra_body": "LLM_EXTRA_BODY",
+  "llm.extra_headers": "LLM_EXTRA_HEADERS",
   "embedder.model": "EMBED_MODEL",
   "embedder.base_url": "EMBED_BASE",
   "embedder.api_key": "EMBED_KEY",
+  "embedder.extra_body": "EMBED_EXTRA_BODY",
+  "embedder.extra_headers": "EMBED_EXTRA_HEADERS",
   "dedup.enabled": "DEDUP_ENABLED",
   "dedup.threshold": "DEDUP_THRESHOLD",
   "dedup.skip_threshold": "DEDUP_SKIP_THRESHOLD",
@@ -96,7 +105,8 @@ export function configFromFile(path: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [dot, key] of Object.entries(FILE_KEY_MAP)) {
     const value = dotGet(data, dot);
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") result[key] = String(value);
+    if (value !== null && typeof value === "object") result[key] = JSON.stringify(value);
+    else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") result[key] = String(value);
   }
   return result;
 }
@@ -122,11 +132,24 @@ export function buildConfig(values: Record<string, string>): MemoryHubConfig {
     if (values.LLM_BASE) cfg.llm.base_url = values.LLM_BASE;
     if (values.LLM_KEY) cfg.llm.api_key = values.LLM_KEY;
   }
+  if (values.LLM_MAX_TOKENS || values.LLM_MAX_TOKENS_PARAM || values.LLM_TEMPERATURE || values.LLM_EXTRA_BODY || values.LLM_EXTRA_HEADERS) {
+    cfg.llm = cfg.llm ?? {};
+    if (values.LLM_MAX_TOKENS) cfg.llm.max_tokens = Number(values.LLM_MAX_TOKENS);
+    if (values.LLM_MAX_TOKENS_PARAM) cfg.llm.max_tokens_param = values.LLM_MAX_TOKENS_PARAM;
+    if (values.LLM_TEMPERATURE) cfg.llm.temperature = values.LLM_TEMPERATURE === "auto" || values.LLM_TEMPERATURE === "none" ? values.LLM_TEMPERATURE : Number(values.LLM_TEMPERATURE);
+    if (values.LLM_EXTRA_BODY) cfg.llm.extra_body = JSON.parse(values.LLM_EXTRA_BODY);
+    if (values.LLM_EXTRA_HEADERS) cfg.llm.extra_headers = JSON.parse(values.LLM_EXTRA_HEADERS);
+  }
   if (values.EMBED_MODEL || values.EMBED_BASE || values.EMBED_KEY) {
     cfg.embedder = {};
     if (values.EMBED_MODEL) cfg.embedder.model = values.EMBED_MODEL;
     if (values.EMBED_BASE) cfg.embedder.base_url = values.EMBED_BASE;
     if (values.EMBED_KEY) cfg.embedder.api_key = values.EMBED_KEY;
+  }
+  if (values.EMBED_EXTRA_BODY || values.EMBED_EXTRA_HEADERS) {
+    cfg.embedder = cfg.embedder ?? {};
+    if (values.EMBED_EXTRA_BODY) cfg.embedder.extra_body = JSON.parse(values.EMBED_EXTRA_BODY);
+    if (values.EMBED_EXTRA_HEADERS) cfg.embedder.extra_headers = JSON.parse(values.EMBED_EXTRA_HEADERS);
   }
   if (values.API_TOKEN) cfg.api_token = values.API_TOKEN;
   if (values.SESSION_IDLE_MS) {
