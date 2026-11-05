@@ -289,6 +289,7 @@ export interface MemoryRecord {
   updated_at?: string;
   expires_at?: string;
   importance?: number;
+  links?: string[];
 }
 
 function nowIso(): string {
@@ -339,6 +340,7 @@ export function toRecord(p: { id: string | number; payload?: Record<string, unkn
   if (payload.updated_at !== undefined) rec.updated_at = String(payload.updated_at);
   if (payload.expires_at !== undefined) rec.expires_at = String(payload.expires_at);
   if (payload.importance !== undefined) rec.importance = Number(payload.importance);
+  if (Array.isArray(payload.links)) rec.links = payload.links.filter((l): l is string => typeof l === "string");
   return rec;
 }
 
@@ -562,6 +564,7 @@ function validateImportRecord(r: unknown, index: number): MemoryRecord {
   if (rec.project !== undefined && (typeof rec.project !== "string" || !rec.project.trim())) throw new Error(`item ${index}: project must be a non-empty string`);
   if (rec.source !== undefined && (typeof rec.source !== "string" || !rec.source.trim())) throw new Error(`item ${index}: source must be a non-empty string`);
   if (rec.importance !== undefined && (typeof rec.importance !== "number" || rec.importance < 0 || rec.importance > 1)) throw new Error(`item ${index}: importance must be a number between 0 and 1`);
+  if (rec.links !== undefined && (!Array.isArray(rec.links) || rec.links.some((l) => typeof l !== "string"))) throw new Error(`item ${index}: links must be an array of memory ids`);
   for (const k of ["created_at", "updated_at", "expires_at"] as const) {
     if (rec[k] !== undefined && (typeof rec[k] !== "string" || isNaN(Date.parse(rec[k])))) throw new Error(`item ${index}: ${k} must be a valid ISO date string`);
   }
@@ -574,6 +577,7 @@ function validateImportRecord(r: unknown, index: number): MemoryRecord {
     ...(typeof rec.created_at === "string" ? { created_at: rec.created_at } : {}),
     ...(typeof rec.updated_at === "string" ? { updated_at: rec.updated_at } : {}),
     ...(typeof rec.expires_at === "string" ? { expires_at: rec.expires_at } : {}),
+    ...(Array.isArray(rec.links) ? { links: rec.links as string[] } : {}),
   };
 }
 
@@ -604,6 +608,7 @@ export async function importMemories(data: string) {
       if (rec.source) payload.source = rec.source;
       if (rec.importance !== undefined) payload.importance = rec.importance;
       if (rec.expires_at) payload.expires_at = rec.expires_at;
+      if (rec.links && rec.links.length) payload.links = rec.links;
       await qdrant().upsert(getConfig("COLLECTION"), { points: [{ id: qdrantId(rec.id), vector, payload }], wait: true });
       imported++;
     } catch (e) {
@@ -761,6 +766,7 @@ export async function getStats() {
   if (ageCount > 0) stats.avg_age_days = Math.round((ageSum / ageCount / dayMs) * 10) / 10;
   else stats.avg_age_days = null;
   const vectorBytes = (pointsCount * (vectorSize(r) ?? 0) * 4) || 0;
+  stats.text_bytes = textBytes;
   stats.size_bytes = textBytes + vectorBytes;
   return JSON.stringify(stats, null, 2);
 }
@@ -866,4 +872,156 @@ export async function healthCheck(): Promise<string> {
   } catch {
     return JSON.stringify({ status: "degraded", qdrant: "unreachable" });
   }
+}
+
+// --- dashboard support ---
+
+function cosine(a: number[], b: number[]): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/** A single memory plus its auto (similarity) and manual (explicit) relations. */
+export async function relatedMemories(id: string, limit = 6): Promise<string> {
+  const col = getConfig("COLLECTION");
+  const capped = Math.min(Math.max(1, limit), 25);
+  const found = await qdrant().retrieve(col, { ids: [qdrantId(id)], with_payload: true, with_vector: true });
+  const point = found[0] as { id: string | number; payload?: Record<string, unknown>; vector?: unknown } | undefined;
+  if (!point) throw new Error(`memory not found: ${id}`);
+  const record = toRecord(point);
+  const vector = Array.isArray(point.vector) ? (point.vector as number[]) : undefined;
+
+  let related: Array<MemoryRecord & { score: number }> = [];
+  if (vector) {
+    const res = await qdrant().query(col, { query: vector, limit: capped + 1, with_payload: true });
+    related = (res.points as Array<{ id: string | number; payload?: Record<string, unknown>; score?: number }>)
+      .filter((p) => String(p.id) !== String(point.id))
+      .slice(0, capped)
+      .map((p) => ({ ...toRecord(p), score: typeof p.score === "number" ? p.score : 0 }));
+  }
+
+  const linkIds = record.links ?? [];
+  const manual = linkIds.length
+    ? (await qdrant().retrieve(col, { ids: linkIds.map(qdrantId), with_payload: true })).map((p) => toRecord(p as { id: string | number; payload?: Record<string, unknown> | null }))
+    : [];
+
+  return JSON.stringify({ memory: record, related, manual }, null, 2);
+}
+
+export async function linkMemories(id: string, linkIds: string[]): Promise<string> {
+  const col = getConfig("COLLECTION");
+  const found = await qdrant().retrieve(col, { ids: [qdrantId(id)], with_payload: true });
+  if (!found[0]) throw new Error(`memory not found: ${id}`);
+  const existing = toRecord(found[0] as { id: string | number; payload?: Record<string, unknown> | null }).links ?? [];
+  const merged = Array.from(new Set([...existing, ...linkIds.filter((l) => l && l !== id)]));
+  await qdrant().setPayload(col, { points: [qdrantId(id)], payload: { links: merged }, wait: true });
+  return JSON.stringify({ id, links: merged }, null, 2);
+}
+
+export async function unlinkMemories(id: string, linkIds: string[]): Promise<string> {
+  const col = getConfig("COLLECTION");
+  const found = await qdrant().retrieve(col, { ids: [qdrantId(id)], with_payload: true });
+  if (!found[0]) throw new Error(`memory not found: ${id}`);
+  const existing = toRecord(found[0] as { id: string | number; payload?: Record<string, unknown> | null }).links ?? [];
+  const remaining = existing.filter((l) => !linkIds.includes(l));
+  await qdrant().setPayload(col, { points: [qdrantId(id)], payload: { links: remaining }, wait: true });
+  return JSON.stringify({ id, links: remaining }, null, 2);
+}
+
+let graphCache: { key: string; at: number; data: string } | null = null;
+
+/**
+ * Graph data for the relations view: nodes plus edges that are either manual
+ * links or high-similarity neighbours.
+ * ponytail: O(n^2) similarity over the scanned nodes; cap `maxNodes` (and cache)
+ * until the corpus grows enough to justify Qdrant-side kNN per node.
+ */
+export async function graphMemories(threshold = 0.55, maxNodes = 300, neighbors = 4): Promise<string> {
+  const col = getConfig("COLLECTION");
+  const thr = Math.min(Math.max(0, threshold), 1);
+  const cap = Math.min(Math.max(10, maxNodes), 2000);
+  const key = `${col}:${thr}:${cap}:${neighbors}`;
+  if (graphCache && graphCache.key === key && Date.now() - graphCache.at < 60_000) return graphCache.data;
+
+  const page = await qdrant().scroll(col, { limit: cap, with_payload: true, with_vector: true });
+  const points = page.points as Array<{ id: string | number; payload?: Record<string, unknown> | null; vector?: unknown }>;
+  const nodes = points.map((p) => {
+    const r = toRecord(p);
+    return { id: r.id, text: r.text, project: r.project ?? null, source: r.source ?? null, importance: r.importance ?? null, links: r.links ?? [] };
+  });
+  const idx = new Map<string, number>();
+  nodes.forEach((n, i) => idx.set(n.id, i));
+  const vecs = points.map((p) => (Array.isArray(p.vector) ? (p.vector as number[]) : null));
+
+  const edges = new Map<string, { source: string; target: string; score: number; kind: "similar" | "manual" }>();
+  for (const n of nodes) {
+    for (const l of n.links) {
+      if (!idx.has(l)) continue;
+      const [a, b] = n.id < l ? [n.id, l] : [l, n.id];
+      edges.set(`${a}|${b}`, { source: a, target: b, score: 1, kind: "manual" });
+    }
+  }
+  for (let i = 0; i < nodes.length; i++) {
+    if (!vecs[i]) continue;
+    const best: Array<{ j: number; score: number }> = [];
+    for (let j = 0; j < nodes.length; j++) {
+      if (i === j || !vecs[j]) continue;
+      const score = cosine(vecs[i]!, vecs[j]!);
+      if (score < thr) continue;
+      best.push({ j, score });
+    }
+    best.sort((x, y) => y.score - x.score);
+    for (const { j, score } of best.slice(0, Math.max(1, neighbors))) {
+      const [a, b] = nodes[i].id < nodes[j].id ? [nodes[i].id, nodes[j].id] : [nodes[j].id, nodes[i].id];
+      const existing = edges.get(`${a}|${b}`);
+      if (!existing || (existing.kind === "similar" && score > existing.score)) {
+        edges.set(`${a}|${b}`, { source: a, target: b, score, kind: "similar" });
+      }
+    }
+  }
+
+  const data = JSON.stringify({ nodes, edges: [...edges.values()], threshold: thr, capped: nodes.length < cap });
+  graphCache = { key, at: Date.now(), data };
+  return data;
+}
+
+let dupCache: { key: string; at: number; data: string } | null = null;
+
+/**
+ * Near-identical memory pairs, for the dashboard's duplicates view.
+ * ponytail: O(n^2) over the scanned nodes; cap `maxNodes` until the corpus grows.
+ */
+export async function duplicatePairs(threshold = 0.98, maxNodes = 500, limit = 50): Promise<string> {
+  const col = getConfig("COLLECTION");
+  const thr = Math.min(Math.max(0, threshold), 1);
+  const cap = Math.min(Math.max(10, maxNodes), 2000);
+  const max = Math.min(Math.max(1, limit), 200);
+  const key = `${col}:${thr}:${cap}:${max}`;
+  if (dupCache && dupCache.key === key && Date.now() - dupCache.at < 30_000) return dupCache.data;
+
+  const page = await qdrant().scroll(col, { limit: cap, with_payload: true, with_vector: true });
+  const points = page.points as Array<{ id: string | number; payload?: Record<string, unknown> | null; vector?: unknown }>;
+  const vecs = points.map((p) => (Array.isArray(p.vector) ? (p.vector as number[]) : null));
+  const pairs: Array<{ a: MemoryRecord; b: MemoryRecord; score: number }> = [];
+  for (let i = 0; i < points.length; i++) {
+    if (!vecs[i]) continue;
+    for (let j = i + 1; j < points.length; j++) {
+      if (!vecs[j]) continue;
+      const score = cosine(vecs[i]!, vecs[j]!);
+      if (score >= thr) pairs.push({ a: toRecord(points[i]), b: toRecord(points[j]), score });
+    }
+  }
+  pairs.sort((x, y) => y.score - x.score);
+  const data = JSON.stringify({ pairs: pairs.slice(0, max), scanned: points.length, threshold: thr }, null, 2);
+  dupCache = { key, at: Date.now(), data };
+  return data;
 }

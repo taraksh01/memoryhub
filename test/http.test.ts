@@ -1317,3 +1317,93 @@ test("tools/list returns all 16 tools with correct names", async () => {
   assert.equal(names.length, 16);
   assert.deepEqual(names, expected);
 });
+
+// --- dashboard ---
+
+test("GET /dashboard serves the dashboard page", async () => {
+  const res = await fetch(`${base}/dashboard`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") ?? "", /text\/html/);
+  const html = await res.text();
+  assert.ok(html.includes("MemoryHub"));
+  assert.ok(html.includes("/api/memories"));
+});
+
+test("GET /api/memories returns memories", async (t) => {
+  mockQdrant(t, { scroll: [{ id: "m1", payload: { text: "hello", project: "p" } }] });
+  const res = await fetch(`${base}/api/memories?limit=5`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.mode, "list");
+  assert.equal(body.memories.length, 1);
+  assert.equal(body.memories[0].text, "hello");
+});
+
+const ID_A = "11111111-1111-4111-8111-111111111111";
+const ID_B = "22222222-2222-4222-8222-222222222222";
+
+test("GET /api/related returns similar memories", async (t) => {
+  mockQdrant(t, { search: [{ id: ID_B, payload: { text: "similar" }, score: 0.9 }] });
+  const res = await fetch(`${base}/api/related?id=${ID_A}&limit=3`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.memory.id, ID_A);
+  assert.equal(body.related[0].id, ID_B);
+  assert.equal(body.related[0].score, 0.9);
+});
+
+test("POST /api/links links two memories", async (t) => {
+  mockQdrant(t, {});
+  const res = await fetch(`${base}/api/links`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: ID_A, linkIds: [ID_B] }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body.links, [ID_B]);
+});
+
+test("DELETE /api/memories removes a memory", async (t) => {
+  mockQdrant(t, {});
+  const res = await fetch(`${base}/api/memories?id=m1`, { method: "DELETE" });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.deleted, 1);
+});
+
+test("GET /api/config requires and accepts the dashboard token when API_TOKEN is set", async () => {
+  setConfig("API_TOKEN", "sekrit-token-123456");
+  try {
+    const denied = await fetch(`${base}/api/config`);
+    assert.equal(denied.status, 401);
+    const ok = await fetch(`${base}/api/config?token=sekrit-token-123456`);
+    assert.equal(ok.status, 200);
+    const body = await ok.json();
+    assert.equal(body.config.API_TOKEN, "sekr****3456");
+    assert.ok(body.config.QDRANT_URL);
+  } finally {
+    setConfig("API_TOKEN", "");
+  }
+});
+
+test("POST /api/config updates a runtime value and rejects unknown keys", async () => {
+  const res = await fetch(`${base}/api/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: "RETRY_DELAY_MS", value: "1000", persist: false }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.updated, "RETRY_DELAY_MS");
+  assert.equal(body.value, "1000");
+  assert.equal(body.persisted, false);
+  assert.equal(getConfig("RETRY_DELAY_MS"), "1000");
+
+  const bad = await fetch(`${base}/api/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: "NOPE", value: "x" }),
+  });
+  assert.equal(bad.status, 400);
+});
