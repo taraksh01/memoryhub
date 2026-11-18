@@ -197,6 +197,21 @@ LLM and embedding API calls retry up to 3 attempts on transient errors (rate lim
 
 Remote clients connect to `http://<host>:9876/mcp`. If `API_TOKEN` is set, every request must include `Authorization: Bearer <token>`; unauthenticated requests get `401`. Request bodies are capped at 5 MB (`413`).
 
+## Dashboard
+
+`memoryhub serve` also hosts a browser UI at `/dashboard` on the same port as the MCP endpoint:
+
+- **Memories** — search (semantic or exact), filter by project or source, and open any row to edit or delete it.
+- **Projects** — counts by project and by source.
+- **Health** — collection totals, expiry, text and collection size, plus memories older than 90 days.
+- **Relations** — a graph where edges are either semantic similarity (threshold slider) or explicit links you created.
+- **Duplicates** — near-identical pairs above a similarity threshold, with a delete action for either side.
+- **Settings** — every runtime config key, editable, with an optional "Save to file" tick.
+
+You can add memories, edit or delete them, and create or remove explicit links directly in the UI. It is backed by a small JSON API on the same server (`/api/memories`, `/api/stats`, `/api/related`, `/api/graph`, `/api/duplicates`, `/api/links`, `/api/config`). When `API_TOKEN` is set, pass it as `?token=<token>` or as an `Authorization: Bearer` header.
+
+Open `http://<host>:9876/dashboard`, or the same path through your reverse proxy (for example Tailscale serve).
+
 ## Build
 
 ```bash

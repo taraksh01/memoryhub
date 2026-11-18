@@ -3,7 +3,9 @@ import type { Server as McpServer } from "@modelcontextprotocol/sdk/server/index
 import { randomUUID } from "node:crypto";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { getConfig } from "./config.js";
+import { getConfig, getAllConfig, setConfig, persistConfig, mask } from "./config.js";
+import { DASHBOARD_HTML } from "./dashboard.js";
+import { getStats, listMemories, searchMemories, relatedMemories, graphMemories, reviewStale, linkMemories, unlinkMemories, addMemories, updateMemory, deleteMemories, duplicatePairs } from "./memory.js";
 
 export interface HttpHandle {
   httpServer: ReturnType<typeof createServer>;
@@ -79,6 +81,166 @@ function lazyExpired(sessions: Map<string, Session>, sessionId: string | undefin
   return s;
 }
 
+function checkDashboardAuth(req: IncomingMessage, res: ServerResponse, url: URL): boolean {
+  const token = getConfig("API_TOKEN");
+  if (!token) return true;
+  const header = req.headers["authorization"];
+  const fromHeader = typeof header === "string" && header.toLowerCase().startsWith("bearer ") ? header.slice(7) : undefined;
+  const value = fromHeader ?? url.searchParams.get("token") ?? undefined;
+  if (!value) {
+    unauthorized(res);
+    return false;
+  }
+  const a = Buffer.from(token);
+  const b = Buffer.from(value);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    unauthorized(res);
+    return false;
+  }
+  return true;
+}
+
+function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error("payload too large"));
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      try {
+        resolve(chunks.length ? (JSON.parse(Buffer.concat(chunks).toString("utf-8")) as Record<string, unknown>) : {});
+      } catch {
+        reject(new Error("invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+async function handleDashboardApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const q = url.searchParams;
+  const num = (key: string, fallback: number): number => {
+    const v = Number(q.get(key));
+    return Number.isFinite(v) && v > 0 ? v : fallback;
+  };
+  const send = (payload: string | object): void => {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" })
+      .end(typeof payload === "string" ? payload : JSON.stringify(payload));
+  };
+  try {
+    if (req.method === "GET" && url.pathname === "/api/stats") {
+      send(await getStats());
+    } else if (req.method === "GET" && url.pathname === "/api/memories") {
+      const project = q.get("project") || undefined;
+      const source = q.get("source") || undefined;
+      const limit = num("limit", 50);
+      const query = q.get("q");
+      if (query) {
+        const found = JSON.parse(await searchMemories(query, limit, project, { source, exact: q.get("exact") === "true" }));
+        send({ memories: found, next_offset: null, mode: "search" });
+      } else {
+        const page = JSON.parse(await listMemories(limit, q.get("offset") || undefined, project, source));
+        send({ memories: page.memories ?? [], next_offset: page.next_offset ?? null, mode: "list" });
+      }
+    } else if (req.method === "GET" && url.pathname === "/api/related") {
+      const id = q.get("id");
+      if (!id) {
+        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "id is required" }));
+      } else {
+        send(await relatedMemories(id, num("limit", 6)));
+      }
+    } else if (req.method === "GET" && url.pathname === "/api/graph") {
+      send(await graphMemories(Number(q.get("threshold")) || 0.55, num("maxNodes", 250), num("neighbors", 4)));
+    } else if (req.method === "GET" && url.pathname === "/api/stale") {
+      send(await reviewStale({
+        project: q.get("project") || undefined,
+        source: q.get("source") || undefined,
+        days: num("days", 7),
+        older_than_days: num("older_than_days", 90),
+        limit: num("limit", 25),
+      }));
+    } else if (url.pathname === "/api/links" && (req.method === "POST" || req.method === "DELETE")) {
+      const body = await readJsonBody(req);
+      const id = typeof body.id === "string" ? body.id : "";
+      const linkIds = Array.isArray(body.linkIds) ? body.linkIds.filter((x): x is string => typeof x === "string") : [];
+      if (!id || linkIds.length === 0) {
+        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "id and linkIds are required" }));
+      } else {
+        send(req.method === "POST" ? await linkMemories(id, linkIds) : await unlinkMemories(id, linkIds));
+      }
+    } else if (url.pathname === "/api/memories" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const text = typeof body.text === "string" ? body.text : "";
+      if (!text.trim()) {
+        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "text is required" }));
+      } else {
+        send(JSON.parse(await addMemories(text, typeof body.project === "string" ? body.project : undefined, {
+          source: typeof body.source === "string" ? body.source : undefined,
+          importance: typeof body.importance === "number" ? body.importance : undefined,
+          expires_at: typeof body.expires_at === "string" ? body.expires_at : undefined,
+          dedup: typeof body.dedup === "boolean" ? body.dedup : undefined,
+          threshold: typeof body.threshold === "number" ? body.threshold : undefined,
+        })));
+      }
+    } else if (url.pathname === "/api/memories" && req.method === "PATCH") {
+      const body = await readJsonBody(req);
+      const id = typeof body.id === "string" ? body.id : "";
+      const text = typeof body.text === "string" ? body.text : "";
+      if (!id || !text.trim()) {
+        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "id and text are required" }));
+      } else {
+        send(JSON.parse(await updateMemory(id, text, {
+          source: typeof body.source === "string" ? body.source : undefined,
+          importance: typeof body.importance === "number" ? body.importance : undefined,
+          expires_at: typeof body.expires_at === "string" ? body.expires_at : undefined,
+        })));
+      }
+    } else if (url.pathname === "/api/memories" && req.method === "DELETE") {
+      const id = q.get("id");
+      if (!id) {
+        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "id is required" }));
+      } else {
+        send(JSON.parse(await deleteMemories([id])));
+      }
+    } else if (req.method === "GET" && url.pathname === "/api/duplicates") {
+      send(await duplicatePairs(Number(q.get("threshold")) || 0.98, num("maxNodes", 500), num("limit", 50)));
+    } else if (req.method === "GET" && url.pathname === "/api/config") {
+      send({ config: getAllConfig() });
+    } else if (req.method === "POST" && url.pathname === "/api/config") {
+      const body = await readJsonBody(req);
+      const key = typeof body.key === "string" ? body.key : "";
+      const value = typeof body.value === "string" ? body.value : "";
+      const persist = body.persist === true;
+      if (!key) {
+        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "key is required" }));
+      } else {
+        const secret = key === "LLM_KEY" || key === "EMBED_KEY" || key === "API_TOKEN";
+        if (persist) {
+          const path = persistConfig(key, value);
+          const effective = getConfig(key);
+          send({ updated: key, value: secret ? mask(effective) : effective, persisted: true, path });
+        } else {
+          setConfig(key, value);
+          const effective = getConfig(key);
+          send({ updated: key, value: secret ? (effective === "" ? "" : mask(effective)) : effective, persisted: false });
+        }
+      }
+    } else {
+      res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "not found" }));
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (!res.headersSent) res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: message }));
+  }
+}
+
 export function createHttpServer(serverFactory: () => McpServer, options: HttpServerOptions = {}): HttpHandle {
   const sessions = new Map<string, Session>();
   const pending = new Map<StreamableHTTPServerTransport, number>();
@@ -91,8 +253,23 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         return;
       }
       if (req.method === "POST" && !req.headers["content-length"]) enforceBodyLimit(req, res);
+
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const pathname = url.pathname;
+
+      // Dashboard + JSON API (token accepted via header or ?token= when set).
+      if (pathname === "/" || pathname === "/dashboard" || pathname.startsWith("/api/")) {
+        if (!checkDashboardAuth(req, res, url)) return;
+        if (pathname === "/" || pathname === "/dashboard") {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }).end(DASHBOARD_HTML);
+        } else {
+          await handleDashboardApi(req, res, url);
+        }
+        return;
+      }
+
       if (!checkAuth(req, res)) return;
-      if (req.method === "GET" && req.url === "/mcp") {
+      if (req.method === "GET" && pathname === "/mcp") {
         const sessionId = sessionIdFrom(req);
         const session = lazyExpired(sessions, sessionId, idleMs, Date.now());
         if (!session) {
@@ -101,7 +278,7 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         }
         session.lastSeen = Date.now();
         await session.transport.handleRequest(req, res);
-      } else if (req.method === "POST" && req.url === "/mcp") {
+      } else if (req.method === "POST" && pathname === "/mcp") {
         const sessionId = sessionIdFrom(req);
         let session = lazyExpired(sessions, sessionId, idleMs, Date.now());
         if (sessionId && !session) {
@@ -154,7 +331,7 @@ export function createHttpServer(serverFactory: () => McpServer, options: HttpSe
         }
         session.lastSeen = Date.now();
         await session.transport.handleRequest(req, res);
-      } else if (req.method === "DELETE" && req.url === "/mcp") {
+      } else if (req.method === "DELETE" && pathname === "/mcp") {
         const sessionId = sessionIdFrom(req);
         const session = lazyExpired(sessions, sessionId, idleMs, Date.now());
         if (!sessionId || !session) {
